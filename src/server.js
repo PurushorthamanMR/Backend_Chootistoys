@@ -73,7 +73,9 @@ async function start() {
   }
 
   app.listen(PORT, () => {
-    console.log(`City Cycle Stores API running on http://localhost:${PORT}`);
+    const publicUrl = (process.env.PUBLIC_BACKEND_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+    console.log(`City Cycle Stores API listening on port ${PORT}`);
+    console.log(`Public URL: ${publicUrl}`);
   });
 }
 
