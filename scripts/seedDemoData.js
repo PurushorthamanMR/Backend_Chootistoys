@@ -88,7 +88,7 @@ const DEMO_CUSTOMER_NAMES = [
   'Chamodi Gunawardena',
   'Isuru Kumarasinghe',
   'Nadeesha Abeysekera',
-  'Kasun Mendis',
+  'Kasun Mendes',
   'Piumi Wickramasinghe',
   'Lahiru Dissanayake',
   'Hansika de Silva',
