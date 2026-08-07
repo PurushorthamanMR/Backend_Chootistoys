@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Runs automatically after a successful `git pull` / merge.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+APP_NAME="${PM2_APP_NAME:-chootistoys-backend}"
+
+echo "[post-merge] Installing deps..."
+npm install --omit=dev
+
+if command -v pm2 >/dev/null 2>&1; then
+  if pm2 describe "$APP_NAME" >/dev/null 2>&1; then
+    echo "[post-merge] Restarting $APP_NAME..."
+    pm2 restart "$APP_NAME"
+  else
+    echo "[post-merge] Starting $APP_NAME..."
+    pm2 start src/server.js --name "$APP_NAME"
+  fi
+  pm2 save
+  echo "[post-merge] PM2 updated."
+else
+  echo "[post-merge] WARNING: pm2 not in PATH — skipped restart."
+fi

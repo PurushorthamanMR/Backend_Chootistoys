@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node src/server.js",
     "start_backend": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "deploy": "bash scripts/deploy.sh",
+    "install-hooks": "bash scripts/install-git-hooks.sh"
   },
   "dependencies": {
     "@emailjs/nodejs": "^5.0.2",
