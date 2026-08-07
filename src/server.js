@@ -26,8 +26,12 @@ const app = express();
 
 // In local dev (no FRONTEND_URL set) allow any origin. In production, set
 // FRONTEND_URL to the site's real domain(s) - comma-separated if there's more
-// than one (e.g. with and without "www").
-const allowedOrigins = process.env.FRONTEND_URL?.split(',').map((o) => o.trim()).filter(Boolean);
+// than one (e.g. with and without "www"). Trailing slashes are stripped since
+// the browser's Origin header never has one, and cors() matches by exact string.
+const allowedOrigins = process.env.FRONTEND_URL?.split(',')
+  .map((o) => o.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+console.log(`[cors] Allowed origins: ${allowedOrigins?.length ? allowedOrigins.join(', ') : '* (FRONTEND_URL not set)'}`);
 app.use(cors(allowedOrigins?.length ? { origin: allowedOrigins } : undefined));
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
