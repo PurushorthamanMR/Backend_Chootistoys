@@ -32,7 +32,7 @@ async function getConfig() {
 function resolveLogoUrl(storeLogo) {
   if (!storeLogo) return '';
   if (/^https?:\/\//i.test(storeLogo)) return storeLogo;
-  const base = (process.env.PUBLIC_BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
+  const base = (process.env.BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
   return `${base}${storeLogo.startsWith('/') ? '' : '/'}${storeLogo}`;
 }
 

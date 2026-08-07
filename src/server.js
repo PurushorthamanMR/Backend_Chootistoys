@@ -24,10 +24,10 @@ const fontRoutes = require('./routes/fontRoutes');
 
 const app = express();
 
-// In local dev (no CORS_ORIGIN set) allow any origin. In production, set
-// CORS_ORIGIN to the site's real domain(s) - comma-separated if there's more
+// In local dev (no FRONTEND_URL set) allow any origin. In production, set
+// FRONTEND_URL to the site's real domain(s) - comma-separated if there's more
 // than one (e.g. with and without "www").
-const allowedOrigins = process.env.CORS_ORIGIN?.split(',').map((o) => o.trim()).filter(Boolean);
+const allowedOrigins = process.env.FRONTEND_URL?.split(',').map((o) => o.trim()).filter(Boolean);
 app.use(cors(allowedOrigins?.length ? { origin: allowedOrigins } : undefined));
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
@@ -73,7 +73,7 @@ async function start() {
   }
 
   app.listen(PORT, () => {
-    const publicUrl = (process.env.PUBLIC_BACKEND_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+    const publicUrl = (process.env.BACKEND_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
     console.log(`City Cycle Stores API listening on port ${PORT}`);
     console.log(`Public URL: ${publicUrl}`);
   });

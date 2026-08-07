@@ -84,12 +84,12 @@ async function getEmailSettings(req, res) {
 }
 
 function driveRedirectUri() {
-  const base = (process.env.PUBLIC_BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
+  const base = (process.env.BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
   return `${base}/api/settings/drive/oauth/callback`;
 }
 
 function frontendSettingsUrl(query = '') {
-  const origin = (process.env.CORS_ORIGIN || 'http://localhost:5173')
+  const origin = (process.env.FRONTEND_URL || 'http://localhost:5173')
     .split(',')
     .map((o) => o.trim())
     .filter(Boolean)[0] || 'http://localhost:5173';
