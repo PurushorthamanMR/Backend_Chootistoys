@@ -10,7 +10,7 @@ const driveService = require('../services/driveService');
 const PUBLIC_SETTINGS_COLUMNS = `
   id, store_name, store_short_name, store_logo, store_icon, whatsapp_number, address, email,
   theme_color_light, theme_color_dark, active_font,
-  terms_content, return_policy_content, privacy_policy_content, updated_at
+  terms_content, return_policy_content, privacy_policy_content, about_content, updated_at
 `;
 
 // Drives the admin panel's setup-progress bar. A section counts as complete
@@ -230,7 +230,7 @@ async function updateSettings(req, res) {
     const {
       store_name, store_short_name, store_logo, store_icon, whatsapp_number, address, email,
       theme_color_light, theme_color_dark,
-      terms_content, return_policy_content, privacy_policy_content,
+      terms_content, return_policy_content, privacy_policy_content, about_content,
       emailjs_service_id, emailjs_public_key, emailjs_private_key, emailjs_reply_to,
       emailjs_template_otp, emailjs_template_notify,
       drive_client_id, drive_client_secret, drive_refresh_token, drive_folder_id,
@@ -250,6 +250,7 @@ async function updateSettings(req, res) {
     if (terms_content !== undefined) { fields.push('terms_content = ?'); values.push(terms_content || null); }
     if (return_policy_content !== undefined) { fields.push('return_policy_content = ?'); values.push(return_policy_content || null); }
     if (privacy_policy_content !== undefined) { fields.push('privacy_policy_content = ?'); values.push(privacy_policy_content || null); }
+    if (about_content !== undefined) { fields.push('about_content = ?'); values.push(about_content || null); }
     if (emailjs_service_id !== undefined) { fields.push('emailjs_service_id = ?'); values.push(emailjs_service_id || null); }
     if (emailjs_public_key !== undefined) { fields.push('emailjs_public_key = ?'); values.push(emailjs_public_key || null); }
     if (emailjs_private_key !== undefined) { fields.push('emailjs_private_key = ?'); values.push(emailjs_private_key || null); }

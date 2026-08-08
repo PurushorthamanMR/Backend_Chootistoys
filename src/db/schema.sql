@@ -164,6 +164,7 @@ CREATE TABLE IF NOT EXISTS settings (
   terms_content LONGTEXT,
   return_policy_content LONGTEXT,
   privacy_policy_content LONGTEXT,
+  about_content LONGTEXT,
   emailjs_service_id VARCHAR(100),
   emailjs_public_key VARCHAR(150),
   emailjs_private_key VARCHAR(150),

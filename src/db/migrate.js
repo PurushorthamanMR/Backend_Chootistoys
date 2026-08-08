@@ -454,17 +454,20 @@ const DEFAULT_RETURN_POLICY_CONTENT = `Update Soon`;
 
 const DEFAULT_PRIVACY_POLICY_CONTENT = `Update Soon`;
 
-/** Seeds default Terms/Return/Privacy content the first time these columns
- *  are empty, so the public policy pages aren't blank out of the box - the
- *  admin can rewrite this from the Admin Settings > Legal Pages section. */
+const DEFAULT_ABOUT_CONTENT = `Update Soon`;
+
+/** Seeds default Terms/Return/Privacy/About content the first time these
+ *  columns are empty, so the public pages aren't blank out of the box - the
+ *  admin can rewrite this from the Admin Settings > Legal Pages / About Us section. */
 async function ensureLegalContent(connection) {
   await connection.query(
     `UPDATE settings SET
        terms_content = COALESCE(terms_content, ?),
        return_policy_content = COALESCE(return_policy_content, ?),
-       privacy_policy_content = COALESCE(privacy_policy_content, ?)
+       privacy_policy_content = COALESCE(privacy_policy_content, ?),
+       about_content = COALESCE(about_content, ?)
      WHERE id = 1`,
-    [DEFAULT_TERMS_CONTENT, DEFAULT_RETURN_POLICY_CONTENT, DEFAULT_PRIVACY_POLICY_CONTENT]
+    [DEFAULT_TERMS_CONTENT, DEFAULT_RETURN_POLICY_CONTENT, DEFAULT_PRIVACY_POLICY_CONTENT, DEFAULT_ABOUT_CONTENT]
   );
 }
 
@@ -533,6 +536,7 @@ async function migrate() {
     await addColumnIfMissing(connection, DB_NAME, 'settings', 'terms_content', 'LONGTEXT', 'wholesale_token');
     await addColumnIfMissing(connection, DB_NAME, 'settings', 'return_policy_content', 'LONGTEXT', 'terms_content');
     await addColumnIfMissing(connection, DB_NAME, 'settings', 'privacy_policy_content', 'LONGTEXT', 'return_policy_content');
+    await addColumnIfMissing(connection, DB_NAME, 'settings', 'about_content', 'LONGTEXT', 'privacy_policy_content');
     // Historical anchor column for the next line, on DBs old enough to be missing active_font -
     // every such DB already has email_from from having booted a pre-EmailJS version of this app.
     await addColumnIfMissing(connection, DB_NAME, 'settings', 'active_font', "VARCHAR(150) NOT NULL DEFAULT 'Archivo Narrow'", 'email_from');
