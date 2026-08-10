@@ -15,20 +15,37 @@ function applyProductVisibility(row, user) {
   return result;
 }
 
+// Every "best selling"/"hot X" query below unions online orders with POS
+// sales so both channels count toward the same rankings - product_id/
+// quantity/created_at is the common shape both sides produce. Repeated as a
+// literal CTE per query (rather than shared) since MySQL doesn't let a WITH
+// clause span multiple statements.
+const COMBINED_ITEMS_CTE = `
+  WITH combined_items AS (
+    SELECT oi.product_id AS product_id, oi.quantity AS quantity, o.created_at AS created_at
+    FROM order_items oi JOIN orders o ON o.id = oi.order_id
+    WHERE o.status = 'successful'
+    UNION ALL
+    SELECT si.product_id AS product_id, si.quantity AS quantity, s.created_at AS created_at
+    FROM sale_items si JOIN sales s ON s.id = si.sale_id
+    WHERE s.status = 'completed'
+  )
+`;
+
 async function queryTopProducts(days, limit, requireInStock = false) {
-  const dateFilter = days ? 'AND o.created_at >= NOW() - INTERVAL ? DAY' : '';
+  const dateFilter = days ? 'AND ci.created_at >= NOW() - INTERVAL ? DAY' : '';
   const stockFilter = requireInStock ? 'AND p.stock > 0' : '';
   const params = days ? [days, limit] : [limit];
   const [rows] = await pool.query(
-    `SELECT p.*, c.name AS category_name, c.slug AS category_slug,
+    `${COMBINED_ITEMS_CTE}
+     SELECT p.*, c.name AS category_name, c.slug AS category_slug,
             sc.name AS subcategory_name, sc.slug AS subcategory_slug,
-            COALESCE(SUM(oi.quantity), 0) AS total_sold
+            COALESCE(SUM(ci.quantity), 0) AS total_sold
      FROM products p
-     JOIN order_items oi ON oi.product_id = p.id
-     JOIN orders o ON o.id = oi.order_id
+     JOIN combined_items ci ON ci.product_id = p.id
      LEFT JOIN categories c ON c.id = p.category_id
      LEFT JOIN subcategories sc ON sc.id = p.subcategory_id
-     WHERE p.is_active = 1 AND o.status = 'successful' ${dateFilter} ${stockFilter}
+     WHERE p.is_active = 1 ${dateFilter} ${stockFilter}
      GROUP BY p.id
      ORDER BY total_sold DESC
      LIMIT ?`,
@@ -41,12 +58,12 @@ async function getHotSubcategories(req, res) {
   try {
     const limit = Number(req.query.limit) || 10;
     const [rows] = await pool.query(
-      `SELECT sc.*, COALESCE(SUM(oi.quantity), 0) AS total_sold
+      `${COMBINED_ITEMS_CTE}
+       SELECT sc.*, COALESCE(SUM(ci.quantity), 0) AS total_sold
        FROM subcategories sc
        JOIN products p ON p.subcategory_id = sc.id
-       JOIN order_items oi ON oi.product_id = p.id
-       JOIN orders o ON o.id = oi.order_id
-       WHERE sc.is_active = 1 AND o.status = 'successful' AND o.created_at >= NOW() - INTERVAL 7 DAY
+       JOIN combined_items ci ON ci.product_id = p.id
+       WHERE sc.is_active = 1 AND ci.created_at >= NOW() - INTERVAL 7 DAY
        GROUP BY sc.id
        ORDER BY total_sold DESC
        LIMIT ?`,
@@ -69,12 +86,12 @@ async function getHotCategories(req, res) {
   try {
     const limit = Number(req.query.limit) || 10;
     const [rows] = await pool.query(
-      `SELECT c.*, COALESCE(SUM(oi.quantity), 0) AS total_sold
+      `${COMBINED_ITEMS_CTE}
+       SELECT c.*, COALESCE(SUM(ci.quantity), 0) AS total_sold
        FROM categories c
        JOIN products p ON p.category_id = c.id
-       JOIN order_items oi ON oi.product_id = p.id
-       JOIN orders o ON o.id = oi.order_id
-       WHERE c.is_active = 1 AND o.status = 'successful' AND o.created_at >= NOW() - INTERVAL 7 DAY
+       JOIN combined_items ci ON ci.product_id = p.id
+       WHERE c.is_active = 1 AND ci.created_at >= NOW() - INTERVAL 7 DAY
        GROUP BY c.id
        ORDER BY total_sold DESC
        LIMIT ?`,
@@ -116,11 +133,11 @@ async function getFeaturedProducts(req, res) {
 async function getFeaturedCategoriesRanked(req, res) {
   try {
     const [rows] = await pool.query(
-      `SELECT c.*, COALESCE(SUM(oi.quantity), 0) AS total_sold
+      `${COMBINED_ITEMS_CTE}
+       SELECT c.*, COALESCE(SUM(ci.quantity), 0) AS total_sold
        FROM categories c
        LEFT JOIN products p ON p.category_id = c.id
-       LEFT JOIN order_items oi ON oi.product_id = p.id
-       LEFT JOIN orders o ON o.id = oi.order_id AND o.status = 'successful'
+       LEFT JOIN combined_items ci ON ci.product_id = p.id
        WHERE c.is_active = 1
        GROUP BY c.id
        ORDER BY total_sold DESC, c.name ASC`
@@ -154,20 +171,32 @@ async function getBestSelling(req, res) {
 
 async function getDashboardStats(req, res) {
   try {
-    // Retail (Customer) orders only - seller/wholesale orders are reported
-    // separately in getSellerSalesStats so the two price ranges never mix.
-    const [[{ revenue }]] = await pool.query(
+    // Retail (Customer + in-person POS) revenue and best-sellers - seller/
+    // wholesale orders are reported separately in getSellerSalesStats so the
+    // two price ranges never mix. POS sales have no customer_id concept
+    // (every POS sale is an in-person retail transaction), so they're always
+    // included here unconditionally.
+    const [[{ revenue: onlineRevenue }]] = await pool.query(
       `SELECT COALESCE(SUM(total_amount), 0) AS revenue FROM orders WHERE status = 'successful' AND customer_id IS NOT NULL`
+    );
+    const [[{ revenue: posRevenue }]] = await pool.query(
+      `SELECT COALESCE(SUM(total_amount), 0) AS revenue FROM sales WHERE status = 'completed'`
     );
     const [[{ orderCount }]] = await pool.query(`SELECT COUNT(*) AS orderCount FROM orders WHERE customer_id IS NOT NULL`);
     const [[{ productCount }]] = await pool.query(`SELECT COUNT(*) AS productCount FROM products WHERE is_active = 1`);
     const [[{ customerCount }]] = await pool.query(`SELECT COUNT(*) AS customerCount FROM customers`);
 
     const [revenueByDay] = await pool.query(
-      `SELECT DATE(created_at) AS day, COALESCE(SUM(total_amount), 0) AS revenue
-       FROM orders
-       WHERE status = 'successful' AND customer_id IS NOT NULL AND created_at >= NOW() - INTERVAL 30 DAY
-       GROUP BY DATE(created_at)
+      `WITH combined_revenue AS (
+         SELECT DATE(created_at) AS day, total_amount AS amount
+         FROM orders WHERE status = 'successful' AND customer_id IS NOT NULL AND created_at >= NOW() - INTERVAL 30 DAY
+         UNION ALL
+         SELECT DATE(created_at) AS day, total_amount AS amount
+         FROM sales WHERE status = 'completed' AND created_at >= NOW() - INTERVAL 30 DAY
+       )
+       SELECT day, COALESCE(SUM(amount), 0) AS revenue
+       FROM combined_revenue
+       GROUP BY day
        ORDER BY day ASC`
     );
 
@@ -176,27 +205,23 @@ async function getDashboardStats(req, res) {
     );
 
     const [topProducts] = await pool.query(
-      `SELECT p.*, c.name AS category_name, c.slug AS category_slug, COALESCE(SUM(oi.quantity), 0) AS total_sold
+      `${COMBINED_ITEMS_CTE}
+       SELECT p.*, c.name AS category_name, c.slug AS category_slug, COALESCE(SUM(ci.quantity), 0) AS total_sold
        FROM products p
-       JOIN order_items oi ON oi.product_id = p.id
-       JOIN orders o ON o.id = oi.order_id
+       JOIN combined_items ci ON ci.product_id = p.id
        LEFT JOIN categories c ON c.id = p.category_id
-       WHERE p.is_active = 1 AND o.status = 'successful' AND o.customer_id IS NOT NULL
+       WHERE p.is_active = 1
        GROUP BY p.id
        ORDER BY total_sold DESC
        LIMIT 10`
     );
 
     const [topCategories] = await pool.query(
-      `SELECT c.id, c.name, COALESCE(SUM(co.quantity), 0) AS total_sold
+      `${COMBINED_ITEMS_CTE}
+       SELECT c.id, c.name, COALESCE(SUM(ci.quantity), 0) AS total_sold
        FROM categories c
        LEFT JOIN products p ON p.category_id = c.id
-       LEFT JOIN (
-         SELECT oi.product_id, oi.quantity
-         FROM order_items oi
-         JOIN orders o ON o.id = oi.order_id
-         WHERE o.status = 'successful' AND o.customer_id IS NOT NULL
-       ) co ON co.product_id = p.id
+       LEFT JOIN combined_items ci ON ci.product_id = p.id
        WHERE c.is_active = 1
        GROUP BY c.id
        ORDER BY total_sold DESC, c.name ASC
@@ -204,15 +229,11 @@ async function getDashboardStats(req, res) {
     );
 
     const [topSubcategories] = await pool.query(
-      `SELECT sc.id, sc.name, COALESCE(SUM(co.quantity), 0) AS total_sold
+      `${COMBINED_ITEMS_CTE}
+       SELECT sc.id, sc.name, COALESCE(SUM(ci.quantity), 0) AS total_sold
        FROM subcategories sc
        LEFT JOIN products p ON p.subcategory_id = sc.id
-       LEFT JOIN (
-         SELECT oi.product_id, oi.quantity
-         FROM order_items oi
-         JOIN orders o ON o.id = oi.order_id
-         WHERE o.status = 'successful' AND o.customer_id IS NOT NULL
-       ) co ON co.product_id = p.id
+       LEFT JOIN combined_items ci ON ci.product_id = p.id
        WHERE sc.is_active = 1
        GROUP BY sc.id
        ORDER BY total_sold DESC, sc.name ASC
@@ -228,7 +249,7 @@ async function getDashboardStats(req, res) {
     );
 
     res.json({
-      revenue: Number(revenue),
+      revenue: Number(onlineRevenue) + Number(posRevenue),
       orderCount,
       productCount,
       customerCount,
@@ -247,6 +268,8 @@ async function getDashboardStats(req, res) {
 
 // Orders placed by an approved Seller (wholesale/cost pricing) - join through
 // users/user_roles since orders don't store a price-mode column directly.
+// POS/Staff sales are never wholesale, so this is intentionally untouched by
+// the online+POS merge above.
 const SELLER_ORDER_JOIN = `JOIN users su ON su.id = o.user_id JOIN user_roles sr ON sr.id = su.role_id AND sr.name = 'Seller'`;
 
 async function getSellerSalesStats(req, res) {

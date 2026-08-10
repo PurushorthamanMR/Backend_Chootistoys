@@ -43,12 +43,18 @@ async function fieldInUse(column, value, excludeId) {
 
 async function listCustomers(req, res) {
   try {
-    const { active } = req.query;
+    const { active, search } = req.query;
     const isActive = active === '0' || active === 'false' ? 0 : 1;
+    const where = ['is_active = ?', 'whatsapp_number != ?'];
+    const params = [isActive, ANONYMOUS_WHATSAPP_MARKER];
+    if (search) {
+      where.push('(name LIKE ? OR whatsapp_number LIKE ?)');
+      params.push(`%${search}%`, `%${search}%`);
+    }
     const [rows] = await pool.query(
       `SELECT id, name, email, whatsapp_number AS phone, is_active, created_at
-       FROM customers WHERE is_active = ? AND whatsapp_number != ? ORDER BY created_at DESC`,
-      [isActive, ANONYMOUS_WHATSAPP_MARKER]
+       FROM customers WHERE ${where.join(' AND ')} ORDER BY created_at DESC`,
+      params
     );
     res.json(rows);
   } catch (err) {

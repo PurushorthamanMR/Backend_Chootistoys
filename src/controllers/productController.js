@@ -15,7 +15,7 @@ function canManage(user) {
 
 function applyFieldVisibility(row, user) {
   const role = user?.role;
-  const canSeeCode = role === 'Admin' || role === 'SuperAdmin';
+  const canSeeCode = ['Admin', 'SuperAdmin', 'Staff'].includes(role);
   const canSeeCost = canSeeCode || role === 'Seller';
 
   const result = { ...row };

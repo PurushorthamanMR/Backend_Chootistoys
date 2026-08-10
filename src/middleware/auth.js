@@ -43,4 +43,11 @@ function requireSuperAdmin(req, res, next) {
   next();
 }
 
-module.exports = { authenticate, authenticateOptional, requireAdmin, requireSuperAdmin };
+function requirePos(req, res, next) {
+  if (!req.user || !['Staff', 'Admin', 'SuperAdmin'].includes(req.user.role)) {
+    return res.status(403).json({ message: 'POS access required' });
+  }
+  next();
+}
+
+module.exports = { authenticate, authenticateOptional, requireAdmin, requireSuperAdmin, requirePos };

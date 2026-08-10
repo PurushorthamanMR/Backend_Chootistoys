@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS user_roles (
   name VARCHAR(20) NOT NULL UNIQUE
 );
 
-INSERT INTO user_roles (name) VALUES ('SuperAdmin'), ('Admin'), ('Seller'), ('Customer')
+INSERT INTO user_roles (name) VALUES ('SuperAdmin'), ('Admin'), ('Seller'), ('Customer'), ('Staff')
 ON DUPLICATE KEY UPDATE name = VALUES(name);
 
 CREATE TABLE IF NOT EXISTS users (
@@ -176,6 +176,9 @@ CREATE TABLE IF NOT EXISTS settings (
   drive_refresh_token TEXT,
   drive_folder_id VARCHAR(150),
   active_font VARCHAR(150) NOT NULL DEFAULT 'Archivo Narrow',
+  pos_is_active TINYINT(1) NOT NULL DEFAULT 0,
+  pos_tax_percent DECIMAL(5,2) NOT NULL DEFAULT 0,
+  pos_service_charge_percent DECIMAL(5,2) NOT NULL DEFAULT 0,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
@@ -192,4 +195,60 @@ CREATE TABLE IF NOT EXISTS home_sections (
   position INT NOT NULL DEFAULT 0,
   is_visible TINYINT(1) NOT NULL DEFAULT 1,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pos_shifts (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  staff_id INT NOT NULL,
+  opening_cash DECIMAL(10,2) NOT NULL,
+  opened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  closing_cash DECIMAL(10,2) NULL,
+  expected_cash DECIMAL(10,2) NULL,
+  closed_at TIMESTAMP NULL,
+  status ENUM('open', 'closed') NOT NULL DEFAULT 'open',
+  FOREIGN KEY (staff_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS sales (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  shift_id INT NOT NULL,
+  staff_id INT NOT NULL,
+  customer_id INT NULL,
+  subtotal DECIMAL(10,2) NOT NULL,
+  discount_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+  tax_percent DECIMAL(5,2) NOT NULL DEFAULT 0,
+  service_charge_percent DECIMAL(5,2) NOT NULL DEFAULT 0,
+  total_amount DECIMAL(10,2) NOT NULL,
+  payment_method VARCHAR(20) NOT NULL DEFAULT 'cash',
+  status ENUM('completed', 'voided') NOT NULL DEFAULT 'completed',
+  voided_at TIMESTAMP NULL,
+  voided_by INT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (shift_id) REFERENCES pos_shifts(id),
+  FOREIGN KEY (staff_id) REFERENCES users(id),
+  FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL,
+  FOREIGN KEY (voided_by) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS sale_items (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  sale_id INT NOT NULL,
+  product_id INT NULL,
+  product_name VARCHAR(200) NOT NULL,
+  product_code VARCHAR(50) NULL,
+  price DECIMAL(10,2) NOT NULL,
+  quantity INT NOT NULL,
+  FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+  FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS pos_holds (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  staff_id INT NOT NULL,
+  customer_id INT NULL,
+  items JSON NOT NULL,
+  note VARCHAR(255) NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (staff_id) REFERENCES users(id),
+  FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL
 );

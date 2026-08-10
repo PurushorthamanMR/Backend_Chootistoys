@@ -10,7 +10,8 @@ const driveService = require('../services/driveService');
 const PUBLIC_SETTINGS_COLUMNS = `
   id, store_name, store_short_name, store_logo, store_icon, whatsapp_number, address, email,
   theme_color_light, theme_color_dark, active_font,
-  terms_content, return_policy_content, privacy_policy_content, about_content, updated_at
+  terms_content, return_policy_content, privacy_policy_content, about_content, updated_at,
+  pos_is_active, pos_tax_percent, pos_service_charge_percent
 `;
 
 // Drives the admin panel's setup-progress bar. A section counts as complete
@@ -235,7 +236,20 @@ async function updateSettings(req, res) {
       emailjs_template_otp, emailjs_template_notify,
       drive_client_id, drive_client_secret, drive_refresh_token, drive_folder_id,
       active_font,
+      pos_is_active, pos_tax_percent, pos_service_charge_percent,
     } = req.body;
+
+    // POS on/off + its default rates are a SuperAdmin-only control (this
+    // route is otherwise Admin-or-SuperAdmin) - reject outright rather than
+    // silently ignore, so a non-SuperAdmin gets a clear error instead of a
+    // confusing "saved but nothing changed".
+    const posFieldsTouched = [pos_is_active, pos_tax_percent, pos_service_charge_percent].some(
+      (v) => v !== undefined
+    );
+    if (posFieldsTouched && req.user.role !== 'SuperAdmin') {
+      return res.status(403).json({ message: 'Only Super Admin can change POS settings' });
+    }
+
     const fields = [];
     const values = [];
     if (store_name !== undefined) { fields.push('store_name = ?'); values.push(store_name); }
@@ -262,6 +276,12 @@ async function updateSettings(req, res) {
     if (drive_refresh_token !== undefined) { fields.push('drive_refresh_token = ?'); values.push(drive_refresh_token || null); }
     if (drive_folder_id !== undefined) { fields.push('drive_folder_id = ?'); values.push(drive_folder_id || null); }
     if (active_font !== undefined) { fields.push('active_font = ?'); values.push(active_font); }
+    if (pos_is_active !== undefined) { fields.push('pos_is_active = ?'); values.push(pos_is_active ? 1 : 0); }
+    if (pos_tax_percent !== undefined) { fields.push('pos_tax_percent = ?'); values.push(pos_tax_percent); }
+    if (pos_service_charge_percent !== undefined) {
+      fields.push('pos_service_charge_percent = ?');
+      values.push(pos_service_charge_percent);
+    }
     if (fields.length === 0) return res.status(400).json({ message: 'Nothing to update' });
 
     const [[beforeRow]] = await pool.query('SELECT * FROM settings WHERE id = 1');

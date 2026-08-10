@@ -250,7 +250,7 @@ async function migrateUserRoles(connection, dbName) {
     )
   `);
   await connection.query(`
-    INSERT INTO user_roles (name) VALUES ('SuperAdmin'), ('Admin'), ('Seller'), ('Customer')
+    INSERT INTO user_roles (name) VALUES ('SuperAdmin'), ('Admin'), ('Seller'), ('Customer'), ('Staff')
     ON DUPLICATE KEY UPDATE name = VALUES(name)
   `);
 
@@ -557,6 +557,9 @@ async function migrate() {
     // every such DB already has email_from from having booted a pre-EmailJS version of this app.
     await addColumnIfMissing(connection, DB_NAME, 'settings', 'active_font', "VARCHAR(150) NOT NULL DEFAULT 'Archivo Narrow'", 'email_from');
     await addColumnIfMissing(connection, DB_NAME, 'settings', 'store_icon', 'VARCHAR(255)', 'store_logo');
+    await addColumnIfMissing(connection, DB_NAME, 'settings', 'pos_is_active', 'TINYINT(1) NOT NULL DEFAULT 0', 'active_font');
+    await addColumnIfMissing(connection, DB_NAME, 'settings', 'pos_tax_percent', 'DECIMAL(5,2) NOT NULL DEFAULT 0', 'pos_is_active');
+    await addColumnIfMissing(connection, DB_NAME, 'settings', 'pos_service_charge_percent', 'DECIMAL(5,2) NOT NULL DEFAULT 0', 'pos_tax_percent');
 
     // Brevo/SMTP -> EmailJS migration.
     await dropColumnIfExists(connection, DB_NAME, 'settings', 'smtp_host');

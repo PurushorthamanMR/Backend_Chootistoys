@@ -1,9 +1,10 @@
+const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
 const { isValidEmail } = require('../utils/validators');
 const { sendSellerApprovedEmail, sendSellerRejectedEmail } = require('../services/emailService');
 const { ANONYMOUS_SELLER_MARKER } = require('../utils/anonymousSeller');
 
-const ASSIGNABLE_ROLES = ['Seller', 'Admin'];
+const ASSIGNABLE_ROLES = ['Seller', 'Admin', 'Staff'];
 
 const VALID_STATUSES = ['pending', 'approved', 'rejected'];
 
@@ -53,7 +54,7 @@ async function listUsers(req, res) {
     const [rows] = await pool.query(
       `SELECT u.id, u.name, u.email, u.phone, u.shop_name, u.city, r.name AS role, u.status, u.is_active, u.created_at
        FROM users u JOIN user_roles r ON r.id = u.role_id
-       WHERE u.status = ? AND r.name IN ('Admin', 'Seller') AND u.email != ?
+       WHERE u.status = ? AND r.name IN ('Admin', 'Seller', 'Staff') AND u.email != ?
        ORDER BY u.created_at DESC`,
       [filterStatus, ANONYMOUS_SELLER_MARKER]
     );
@@ -116,6 +117,43 @@ async function updateUser(req, res) {
   }
 }
 
+// Staff/cashier accounts have no self-registration flow (unlike Seller's
+// "Apply as a Seller" page) - an Admin/SuperAdmin creates them directly,
+// already approved and active, from the Users page.
+async function createStaffUser(req, res) {
+  try {
+    const { name, email, password, phone } = req.body;
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: 'Name, email, and password are required' });
+    }
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ message: 'Enter a valid email address' });
+    }
+    if (await fieldInUse('email', email)) {
+      return res.status(409).json({ message: 'That email is already in use' });
+    }
+    if (phone && (await fieldInUse('phone', phone))) {
+      return res.status(409).json({ message: 'That phone number is already in use' });
+    }
+
+    const [[role]] = await pool.query(`SELECT id FROM user_roles WHERE name = 'Staff'`);
+    if (!role) return res.status(500).json({ message: 'Staff role is not configured' });
+
+    const hashed = await bcrypt.hash(password, 10);
+    const [result] = await pool.query(
+      `INSERT INTO users (name, email, password, phone, role_id, status, is_active) VALUES (?, ?, ?, ?, ?, 'approved', 1)`,
+      [name, email, hashed, phone || null, role.id]
+    );
+    res.status(201).json({ id: result.insertId, message: 'Staff account created' });
+  } catch (err) {
+    console.error(err);
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ message: 'That email is already in use' });
+    }
+    res.status(500).json({ message: 'Failed to create staff account' });
+  }
+}
+
 async function approveUser(req, res) {
   try {
     const { id } = req.params;
@@ -150,6 +188,7 @@ module.exports = {
   listUsers,
   updateUserRole,
   updateUser,
+  createStaffUser,
   approveUser,
   rejectUser,
   checkUserField,
