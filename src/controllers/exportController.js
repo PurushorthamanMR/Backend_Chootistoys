@@ -1,5 +1,14 @@
 const { spawn } = require('child_process');
 
+// Mirrors the table names in db/schema.sql - kept as an explicit whitelist
+// (rather than trusting the query param directly) since it flows into a
+// shell-spawned mysqldump argument.
+const EXPORTABLE_TABLES = [
+  'user_roles', 'users', 'customers', 'categories', 'subcategories', 'products',
+  'orders', 'order_items', 'wishlist_items', 'offers', 'banners', 'blogs',
+  'otp_codes', 'settings', 'fonts', 'home_sections',
+];
+
 function timestamp() {
   return new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '_');
 }
@@ -11,12 +20,17 @@ function timestamp() {
  */
 function runDump(res, extraArgs, filenameSuffix) {
   const { DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME } = process.env;
+  // db_name must come right after the connection flags and before any
+  // --tables argument - mysqldump treats every bare (non "--") argument
+  // that follows --tables as a table name, so a db_name placed after it
+  // gets silently swallowed as an (nonexistent) extra table instead of
+  // being used as the database to dump.
   const args = [
     '-h', DB_HOST || 'localhost',
     '-P', DB_PORT || '3306',
     '-u', DB_USER || 'root',
-    ...extraArgs,
     DB_NAME,
+    ...extraArgs,
   ];
 
   const child = spawn('mysqldump', args, {
@@ -66,7 +80,14 @@ function exportStructure(req, res) {
 }
 
 function exportData(req, res) {
+  const { table } = req.query;
+  if (table) {
+    if (!EXPORTABLE_TABLES.includes(table)) {
+      return res.status(400).json({ message: `Unknown table: ${table}` });
+    }
+    return runDump(res, ['--no-create-info', '--tables', table], `data_${table}`);
+  }
   runDump(res, ['--no-create-info'], 'data');
 }
 
-module.exports = { exportStructure, exportData };
+module.exports = { exportStructure, exportData, EXPORTABLE_TABLES };

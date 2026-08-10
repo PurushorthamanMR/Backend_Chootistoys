@@ -5,6 +5,7 @@ const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 const { ANONYMOUS_WHATSAPP_MARKER, ANONYMOUS_NAME } = require('../utils/anonymousCustomer');
 const { ANONYMOUS_SELLER_MARKER, ANONYMOUS_SELLER_NAME } = require('../utils/anonymousSeller');
+const { SECTION_KEYS } = require('../utils/homeSections');
 
 async function tableExists(connection, dbName, table) {
   const [rows] = await connection.query(
@@ -495,6 +496,21 @@ async function ensureDefaultFonts(connection) {
   }
 }
 
+/** Seeds the home page's section order the first time this runs, so the
+ *  drag-and-drop layout (Admin > Home Layout) starts out matching the page's
+ *  original hard-coded order instead of an arbitrary one. */
+async function ensureHomeSections(connection) {
+  const [[{ count }]] = await connection.query('SELECT COUNT(*) as count FROM home_sections');
+  if (count > 0) return;
+  for (let i = 0; i < SECTION_KEYS.length; i++) {
+    await connection.query(
+      'INSERT INTO home_sections (section_key, position, is_visible) VALUES (?, ?, 1)',
+      [SECTION_KEYS[i], i]
+    );
+  }
+  console.log('[db] Home page section order seeded.');
+}
+
 async function migrate() {
   const { DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME } = process.env;
 
@@ -589,6 +605,7 @@ async function migrate() {
     await ensureWholesaleToken(connection);
     await ensureLegalContent(connection);
     await ensureDefaultFonts(connection);
+    await ensureHomeSections(connection);
 
     console.log(`[db] Database "${DB_NAME}" and tables are ready.`);
   } finally {

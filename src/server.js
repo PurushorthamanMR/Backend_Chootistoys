@@ -21,6 +21,7 @@ const blogRoutes = require('./routes/blogRoutes');
 const settingsRoutes = require('./routes/settingsRoutes');
 const wholesaleRoutes = require('./routes/wholesaleRoutes');
 const fontRoutes = require('./routes/fontRoutes');
+const homeSectionsRoutes = require('./routes/homeSectionsRoutes');
 
 const app = express();
 
@@ -56,6 +57,7 @@ app.use('/api/blogs', blogRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/wholesale', wholesaleRoutes);
 app.use('/api/fonts', fontRoutes);
+app.use('/api/home-sections', homeSectionsRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ message: 'Not found' });
