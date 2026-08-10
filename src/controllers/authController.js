@@ -109,6 +109,15 @@ async function login(req, res) {
       if (!dbUser.is_active) {
         return res.status(403).json({ message: 'Your account has been deactivated. Please contact the admin.' });
       }
+      // Staff accounts exist only to run the POS - if it's switched off there's
+      // nothing for them to do, so block the login itself rather than letting
+      // them in to a dead-end "POS is disabled" screen.
+      if (dbUser.role === 'Staff') {
+        const [[settingsRow]] = await pool.query('SELECT pos_is_active FROM settings WHERE id = 1');
+        if (!settingsRow?.pos_is_active) {
+          return res.status(403).json({ message: 'POS is currently disabled. Contact the store admin.' });
+        }
+      }
       const user = {
         id: dbUser.id,
         name: dbUser.name,

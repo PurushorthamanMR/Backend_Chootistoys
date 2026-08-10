@@ -179,6 +179,8 @@ CREATE TABLE IF NOT EXISTS settings (
   pos_is_active TINYINT(1) NOT NULL DEFAULT 0,
   pos_tax_percent DECIMAL(5,2) NOT NULL DEFAULT 0,
   pos_service_charge_percent DECIMAL(5,2) NOT NULL DEFAULT 0,
+  pos_receipt_phone VARCHAR(30) DEFAULT '0765947337',
+  pos_display_price VARCHAR(10) NOT NULL DEFAULT 'sale',
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
@@ -219,8 +221,10 @@ CREATE TABLE IF NOT EXISTS sales (
   tax_percent DECIMAL(5,2) NOT NULL DEFAULT 0,
   service_charge_percent DECIMAL(5,2) NOT NULL DEFAULT 0,
   total_amount DECIMAL(10,2) NOT NULL,
+  amount_paid DECIMAL(10,2) NOT NULL DEFAULT 0,
+  balance_due DECIMAL(10,2) NOT NULL DEFAULT 0,
   payment_method VARCHAR(20) NOT NULL DEFAULT 'cash',
-  status ENUM('completed', 'voided') NOT NULL DEFAULT 'completed',
+  status ENUM('completed', 'voided', 'returned') NOT NULL DEFAULT 'completed',
   voided_at TIMESTAMP NULL,
   voided_by INT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -238,8 +242,22 @@ CREATE TABLE IF NOT EXISTS sale_items (
   product_code VARCHAR(50) NULL,
   price DECIMAL(10,2) NOT NULL,
   quantity INT NOT NULL,
+  returned_quantity INT NOT NULL DEFAULT 0,
   FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
   FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS sale_payments (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  sale_id INT NOT NULL,
+  shift_id INT NOT NULL,
+  staff_id INT NOT NULL,
+  amount DECIMAL(10,2) NOT NULL,
+  method VARCHAR(20) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+  FOREIGN KEY (shift_id) REFERENCES pos_shifts(id),
+  FOREIGN KEY (staff_id) REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS pos_holds (

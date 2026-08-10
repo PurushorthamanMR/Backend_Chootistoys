@@ -11,7 +11,7 @@ const PUBLIC_SETTINGS_COLUMNS = `
   id, store_name, store_short_name, store_logo, store_icon, whatsapp_number, address, email,
   theme_color_light, theme_color_dark, active_font,
   terms_content, return_policy_content, privacy_policy_content, about_content, updated_at,
-  pos_is_active, pos_tax_percent, pos_service_charge_percent
+  pos_is_active, pos_tax_percent, pos_service_charge_percent, pos_receipt_phone, pos_display_price
 `;
 
 // Drives the admin panel's setup-progress bar. A section counts as complete
@@ -236,16 +236,20 @@ async function updateSettings(req, res) {
       emailjs_template_otp, emailjs_template_notify,
       drive_client_id, drive_client_secret, drive_refresh_token, drive_folder_id,
       active_font,
-      pos_is_active, pos_tax_percent, pos_service_charge_percent,
+      pos_is_active, pos_tax_percent, pos_service_charge_percent, pos_receipt_phone, pos_display_price,
     } = req.body;
 
     // POS on/off + its default rates are a SuperAdmin-only control (this
     // route is otherwise Admin-or-SuperAdmin) - reject outright rather than
     // silently ignore, so a non-SuperAdmin gets a clear error instead of a
     // confusing "saved but nothing changed".
-    const posFieldsTouched = [pos_is_active, pos_tax_percent, pos_service_charge_percent].some(
-      (v) => v !== undefined
-    );
+    const posFieldsTouched = [
+      pos_is_active,
+      pos_tax_percent,
+      pos_service_charge_percent,
+      pos_receipt_phone,
+      pos_display_price,
+    ].some((v) => v !== undefined);
     if (posFieldsTouched && req.user.role !== 'SuperAdmin') {
       return res.status(403).json({ message: 'Only Super Admin can change POS settings' });
     }
@@ -281,6 +285,12 @@ async function updateSettings(req, res) {
     if (pos_service_charge_percent !== undefined) {
       fields.push('pos_service_charge_percent = ?');
       values.push(pos_service_charge_percent);
+    }
+    if (pos_receipt_phone !== undefined) { fields.push('pos_receipt_phone = ?'); values.push(pos_receipt_phone || null); }
+    if (pos_display_price !== undefined) {
+      const mode = String(pos_display_price).toLowerCase() === 'cost' ? 'cost' : 'sale';
+      fields.push('pos_display_price = ?');
+      values.push(mode);
     }
     if (fields.length === 0) return res.status(400).json({ message: 'Nothing to update' });
 

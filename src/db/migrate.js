@@ -242,6 +242,54 @@ async function migrateOrderItemsReturnedQuantity(connection, dbName) {
   );
 }
 
+async function migrateSalesPayments(connection, dbName) {
+  if (!(await tableExists(connection, dbName, 'sales'))) return;
+  const colNames = await getColumnNames(connection, dbName, 'sales');
+
+  if (!colNames.includes('amount_paid')) {
+    console.log('[db] Adding amount_paid/balance_due columns to sales...');
+    await connection.query(
+      `ALTER TABLE sales ADD COLUMN amount_paid DECIMAL(10,2) NOT NULL DEFAULT 0 AFTER total_amount`
+    );
+    await connection.query(
+      `ALTER TABLE sales ADD COLUMN balance_due DECIMAL(10,2) NOT NULL DEFAULT 0 AFTER amount_paid`
+    );
+    // Historical sales predate advance payments - treat them as fully paid.
+    await connection.query(`UPDATE sales SET amount_paid = total_amount, balance_due = 0`);
+  }
+
+  const [statusCol] = await connection.query(
+    `SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'sales' AND COLUMN_NAME = 'status'`,
+    [dbName]
+  );
+  if (statusCol.length > 0 && !statusCol[0].COLUMN_TYPE.includes("'returned'")) {
+    console.log('[db] Adding "returned" to sales.status enum...');
+    await connection.query(
+      `ALTER TABLE sales MODIFY COLUMN status ENUM('completed', 'voided', 'returned') NOT NULL DEFAULT 'completed'`
+    );
+  }
+}
+
+// sale_payments is created by schema.sql (CREATE TABLE IF NOT EXISTS, runs for both fresh
+// and existing DBs) - this only backfills one row per pre-existing sale so historical data
+// flows through the same payment-method-breakdown reports as new sales. Runs after schema.sql.
+async function migrateSalePaymentsBackfill(connection, dbName) {
+  if (!(await tableExists(connection, dbName, 'sale_payments'))) return;
+  if (!(await tableExists(connection, dbName, 'sales'))) return;
+
+  const [[{ paymentCount }]] = await connection.query('SELECT COUNT(*) AS paymentCount FROM sale_payments');
+  if (paymentCount > 0) return;
+
+  const [[{ salesCount }]] = await connection.query('SELECT COUNT(*) AS salesCount FROM sales');
+  if (salesCount === 0) return;
+
+  console.log('[db] Backfilling sale_payments from existing sales...');
+  await connection.query(`
+    INSERT INTO sale_payments (sale_id, shift_id, staff_id, amount, method, created_at)
+    SELECT id, shift_id, staff_id, total_amount, payment_method, created_at FROM sales
+  `);
+}
+
 async function migrateUserRoles(connection, dbName) {
   await connection.query(`
     CREATE TABLE IF NOT EXISTS user_roles (
@@ -541,6 +589,8 @@ async function migrate() {
     await migrateCustomerName(connection, DB_NAME);
     await migrateOrderItemsProductCode(connection, DB_NAME);
     await migrateOrderItemsReturnedQuantity(connection, DB_NAME);
+    await migrateSalesPayments(connection, DB_NAME);
+    await addColumnIfMissing(connection, DB_NAME, 'sale_items', 'returned_quantity', 'INT NOT NULL DEFAULT 0', 'quantity');
     await addColumnIfMissing(connection, DB_NAME, 'users', 'shop_name', 'VARCHAR(150)', 'address');
     await addColumnIfMissing(connection, DB_NAME, 'users', 'city', 'VARCHAR(100)', 'shop_name');
     await addColumnIfMissing(connection, DB_NAME, 'users', 'image', 'VARCHAR(255)', 'city');
@@ -560,6 +610,8 @@ async function migrate() {
     await addColumnIfMissing(connection, DB_NAME, 'settings', 'pos_is_active', 'TINYINT(1) NOT NULL DEFAULT 0', 'active_font');
     await addColumnIfMissing(connection, DB_NAME, 'settings', 'pos_tax_percent', 'DECIMAL(5,2) NOT NULL DEFAULT 0', 'pos_is_active');
     await addColumnIfMissing(connection, DB_NAME, 'settings', 'pos_service_charge_percent', 'DECIMAL(5,2) NOT NULL DEFAULT 0', 'pos_tax_percent');
+    await addColumnIfMissing(connection, DB_NAME, 'settings', 'pos_receipt_phone', "VARCHAR(30) DEFAULT '0765947337'", 'pos_service_charge_percent');
+    await addColumnIfMissing(connection, DB_NAME, 'settings', 'pos_display_price', "VARCHAR(10) NOT NULL DEFAULT 'sale'", 'pos_receipt_phone');
 
     // Brevo/SMTP -> EmailJS migration.
     await dropColumnIfExists(connection, DB_NAME, 'settings', 'smtp_host');
@@ -600,6 +652,7 @@ async function migrate() {
     await connection.query(schemaSql);
 
     await migrateProductSubcategory(connection, DB_NAME);
+    await migrateSalePaymentsBackfill(connection, DB_NAME);
 
     await ensureCoreUsers(connection);
     await ensureAnonymousCustomer(connection);
