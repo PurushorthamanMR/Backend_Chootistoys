@@ -11,7 +11,8 @@ const PUBLIC_SETTINGS_COLUMNS = `
   id, store_name, store_short_name, store_logo, store_icon, whatsapp_number, address, email,
   theme_color_light, theme_color_dark, active_font,
   terms_content, return_policy_content, privacy_policy_content, about_content, updated_at,
-  pos_is_active, pos_tax_percent, pos_service_charge_percent, pos_receipt_phone, pos_display_price
+  pos_is_active, pos_tax_percent, pos_service_charge_percent, pos_receipt_phone, pos_display_price,
+  pos_reduce_sale_min, pos_reduce_sale_max
 `;
 
 // Drives the admin panel's setup-progress bar. A section counts as complete
@@ -237,6 +238,7 @@ async function updateSettings(req, res) {
       drive_client_id, drive_client_secret, drive_refresh_token, drive_folder_id,
       active_font,
       pos_is_active, pos_tax_percent, pos_service_charge_percent, pos_receipt_phone, pos_display_price,
+      pos_reduce_sale_min, pos_reduce_sale_max,
     } = req.body;
 
     // POS on/off + its default rates are a SuperAdmin-only control (this
@@ -249,6 +251,8 @@ async function updateSettings(req, res) {
       pos_service_charge_percent,
       pos_receipt_phone,
       pos_display_price,
+      pos_reduce_sale_min,
+      pos_reduce_sale_max,
     ].some((v) => v !== undefined);
     if (posFieldsTouched && req.user.role !== 'SuperAdmin') {
       return res.status(403).json({ message: 'Only Super Admin can change POS settings' });
@@ -291,6 +295,27 @@ async function updateSettings(req, res) {
       const mode = String(pos_display_price).toLowerCase() === 'cost' ? 'cost' : 'sale';
       fields.push('pos_display_price = ?');
       values.push(mode);
+    }
+    if (pos_reduce_sale_min !== undefined || pos_reduce_sale_max !== undefined) {
+      const minVal = pos_reduce_sale_min !== undefined ? Number(pos_reduce_sale_min) : null;
+      const maxVal = pos_reduce_sale_max !== undefined ? Number(pos_reduce_sale_max) : null;
+      if (minVal !== null && (Number.isNaN(minVal) || minVal < 0)) {
+        return res.status(400).json({ message: 'Reduce Sale min must be 0 or greater' });
+      }
+      if (maxVal !== null && (Number.isNaN(maxVal) || maxVal < 0)) {
+        return res.status(400).json({ message: 'Reduce Sale max must be 0 or greater' });
+      }
+      if (minVal !== null && maxVal !== null && minVal > maxVal) {
+        return res.status(400).json({ message: 'Reduce Sale min cannot be greater than max' });
+      }
+      if (pos_reduce_sale_min !== undefined) {
+        fields.push('pos_reduce_sale_min = ?');
+        values.push(minVal);
+      }
+      if (pos_reduce_sale_max !== undefined) {
+        fields.push('pos_reduce_sale_max = ?');
+        values.push(maxVal);
+      }
     }
     if (fields.length === 0) return res.status(400).json({ message: 'Nothing to update' });
 

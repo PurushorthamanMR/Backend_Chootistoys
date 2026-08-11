@@ -1,6 +1,119 @@
 const pool = require('../config/db');
+const { reduceSaleReport } = require('../utils/reduceSaleReport');
 
 const PAYMENT_METHODS = ['cash', 'card', 'cheque'];
+
+async function loadReduceSaleSettings() {
+  const [[row]] = await pool.query(
+    'SELECT pos_reduce_sale_min, pos_reduce_sale_max FROM settings WHERE id = 1'
+  );
+  return {
+    min: Number(row?.pos_reduce_sale_min) || 0,
+    max: Number(row?.pos_reduce_sale_max) || 0,
+  };
+}
+
+function wantsReduced(req) {
+  const v = req.query.reduced;
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
+/**
+ * Load completed sales + items + payments for a calendar day (optional staff filter).
+ */
+async function loadCompletedSalesForDate(date, staffId = null) {
+  const params = staffId != null ? [date, staffId] : [date];
+  const staffFilter = staffId != null ? 'AND s.staff_id = ?' : '';
+  const [sales] = await pool.query(
+    `SELECT s.*, u.name AS staff_name, c.name AS customer_name, DATE(s.created_at) AS date
+     FROM sales s
+     JOIN users u ON u.id = s.staff_id
+     LEFT JOIN customers c ON c.id = s.customer_id
+     WHERE DATE(s.created_at) = ? AND s.status = 'completed' ${staffFilter}
+     ORDER BY s.id`,
+    params
+  );
+  if (sales.length === 0) return [];
+
+  const ids = sales.map((s) => s.id);
+  const [items] = await pool.query(
+    `SELECT id, sale_id, product_id, product_name, product_code, price, quantity, returned_quantity
+     FROM sale_items WHERE sale_id IN (?)`,
+    [ids]
+  );
+  const [payments] = await pool.query(
+    `SELECT sale_id, method, amount FROM sale_payments WHERE sale_id IN (?)`,
+    [ids]
+  );
+
+  const itemsBySale = new Map();
+  for (const it of items) {
+    if (!itemsBySale.has(it.sale_id)) itemsBySale.set(it.sale_id, []);
+    itemsBySale.get(it.sale_id).push(it);
+  }
+  const paysBySale = new Map();
+  for (const p of payments) {
+    if (!paysBySale.has(p.sale_id)) paysBySale.set(p.sale_id, []);
+    paysBySale.get(p.sale_id).push(p);
+  }
+
+  return sales.map((s) => ({
+    ...s,
+    date: s.date instanceof Date ? s.date.toISOString().slice(0, 10) : String(s.date).slice(0, 10),
+    items: itemsBySale.get(s.id) || [],
+    payments: paysBySale.get(s.id) || [],
+  }));
+}
+
+/**
+ * Load completed sales + items + payments for one shift.
+ */
+async function loadCompletedSalesForShift(shiftId) {
+  const [sales] = await pool.query(
+    `SELECT s.*, u.name AS staff_name, c.name AS customer_name, DATE(s.created_at) AS date
+     FROM sales s
+     JOIN users u ON u.id = s.staff_id
+     LEFT JOIN customers c ON c.id = s.customer_id
+     WHERE s.shift_id = ? AND s.status = 'completed'
+     ORDER BY s.id`,
+    [shiftId]
+  );
+  if (sales.length === 0) return [];
+
+  const ids = sales.map((s) => s.id);
+  const [items] = await pool.query(
+    `SELECT id, sale_id, product_id, product_name, product_code, price, quantity, returned_quantity
+     FROM sale_items WHERE sale_id IN (?)`,
+    [ids]
+  );
+  const [payments] = await pool.query(
+    `SELECT sale_id, method, amount FROM sale_payments WHERE sale_id IN (?)`,
+    [ids]
+  );
+
+  const itemsBySale = new Map();
+  for (const it of items) {
+    if (!itemsBySale.has(it.sale_id)) itemsBySale.set(it.sale_id, []);
+    itemsBySale.get(it.sale_id).push(it);
+  }
+  const paysBySale = new Map();
+  for (const p of payments) {
+    if (!paysBySale.has(p.sale_id)) paysBySale.set(p.sale_id, []);
+    paysBySale.get(p.sale_id).push(p);
+  }
+
+  return sales.map((s) => ({
+    ...s,
+    date: s.date instanceof Date ? s.date.toISOString().slice(0, 10) : String(s.date).slice(0, 10),
+    items: itemsBySale.get(s.id) || [],
+    payments: paysBySale.get(s.id) || [],
+  }));
+}
+
+function saleDateKey(value) {
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value).slice(0, 10);
+}
 
 async function openShift(req, res) {
   try {
@@ -415,7 +528,61 @@ async function listSales(req, res) {
        LIMIT 200`,
       params
     );
-    res.json(rows);
+
+    if (!wantsReduced(req)) {
+      return res.json(rows);
+    }
+
+    const { min, max } = await loadReduceSaleSettings();
+    if (max <= 0 || min < 0 || min > max) {
+      return res.json(rows);
+    }
+
+    const isStaffOnly = req.user.role === 'Staff';
+    const staffScopeId = isStaffOnly ? req.user.id : null;
+    const nonCompleted = rows.filter((r) => r.status !== 'completed');
+    const completedInList = rows.filter((r) => r.status === 'completed');
+    if (completedInList.length === 0) {
+      return res.json(rows);
+    }
+
+    // Reduce each calendar day with the same scopeKey as Z-Report so totals match.
+    const dates = [...new Set(completedInList.map((r) => saleDateKey(r.created_at)))];
+    const reducedById = new Map();
+    for (const date of dates) {
+      const loaded = await loadCompletedSalesForDate(date, staffScopeId);
+      const result = reduceSaleReport({
+        scopeKey: `z:${date}:${staffScopeId != null ? staffScopeId : 'all'}`,
+        min,
+        max,
+        sales: loaded,
+      });
+      for (const sale of result.sales) {
+        reducedById.set(sale.id, sale);
+      }
+    }
+
+    const reducedCompleted = completedInList
+      .map((row) => {
+        const reduced = reducedById.get(row.id);
+        if (!reduced) return null; // dropped by reducer
+        const { items, payments, date, ...money } = reduced;
+        return {
+          ...row,
+          subtotal: money.subtotal,
+          discount_amount: money.discount_amount,
+          total_amount: money.total_amount,
+          amount_paid: money.amount_paid,
+          balance_due: money.balance_due,
+          payment_method: money.payment_method || row.payment_method,
+        };
+      })
+      .filter(Boolean);
+
+    const merged = [...reducedCompleted, ...nonCompleted].sort(
+      (a, b) => new Date(b.created_at) - new Date(a.created_at)
+    );
+    res.json(merged);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Failed to fetch sales' });
@@ -436,7 +603,41 @@ async function getSaleItems(req, res) {
       return res.status(403).json({ message: 'Not your sale' });
     }
     const [items] = await pool.query('SELECT * FROM sale_items WHERE sale_id = ?', [id]);
-    res.json({ ...sale, items });
+
+    if (!wantsReduced(req) || sale.status !== 'completed') {
+      return res.json({ ...sale, items });
+    }
+
+    const { min, max } = await loadReduceSaleSettings();
+    if (max <= 0 || min < 0 || min > max) {
+      return res.json({ ...sale, items });
+    }
+
+    const isStaffOnly = req.user.role === 'Staff';
+    const staffScopeId = isStaffOnly ? req.user.id : null;
+    const date = saleDateKey(sale.created_at);
+    const loaded = await loadCompletedSalesForDate(date, staffScopeId);
+    const result = reduceSaleReport({
+      scopeKey: `z:${date}:${staffScopeId != null ? staffScopeId : 'all'}`,
+      min,
+      max,
+      sales: loaded,
+    });
+    const reduced = result.sales.find((s) => Number(s.id) === Number(id));
+    if (!reduced) {
+      return res.status(404).json({ message: 'Sale not visible in Reduce Sale view' });
+    }
+
+    res.json({
+      ...sale,
+      subtotal: reduced.subtotal,
+      discount_amount: reduced.discount_amount,
+      total_amount: reduced.total_amount,
+      amount_paid: reduced.amount_paid,
+      balance_due: reduced.balance_due,
+      payment_method: reduced.payment_method || sale.payment_method,
+      items: reduced.items || [],
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Failed to fetch sale' });
@@ -449,6 +650,48 @@ async function getDailyReport(req, res) {
     const isStaffOnly = req.user.role === 'Staff';
     const salesParams = isStaffOnly ? [date, req.user.id] : [date];
     const staffFilter = isStaffOnly ? 'AND s.staff_id = ?' : '';
+    const reduce = wantsReduced(req);
+
+    if (reduce) {
+      const { min, max } = await loadReduceSaleSettings();
+      const loaded = await loadCompletedSalesForDate(date, isStaffOnly ? req.user.id : null);
+      const result = reduceSaleReport({
+        scopeKey: `z:${date}:${isStaffOnly ? req.user.id : 'all'}`,
+        min,
+        max,
+        sales: loaded,
+      });
+
+      const [[voided]] = await pool.query(
+        `SELECT COUNT(*) AS voidedCount FROM sales s WHERE DATE(s.created_at) = ? AND s.status = 'voided' ${staffFilter}`,
+        salesParams
+      );
+      const [[returned]] = await pool.query(
+        `SELECT COUNT(*) AS returnedCount FROM sales s WHERE DATE(s.created_at) = ? AND s.status = 'returned' ${staffFilter}`,
+        salesParams
+      );
+      const shiftParams = isStaffOnly ? [date, req.user.id] : [date];
+      const [shifts] = await pool.query(
+        `SELECT ps.*, u.name AS staff_name FROM pos_shifts ps JOIN users u ON u.id = ps.staff_id
+         WHERE DATE(ps.opened_at) = ? ${isStaffOnly ? 'AND ps.staff_id = ?' : ''}
+         ORDER BY ps.opened_at DESC`,
+        shiftParams
+      );
+
+      return res.json({
+        date,
+        transactionCount: result.aggregates.transactionCount,
+        totalSales: result.aggregates.totalSales,
+        totalDiscount: result.aggregates.totalDiscount,
+        voidedCount: voided.voidedCount,
+        returnedCount: returned.returnedCount,
+        totalBalanceDue: result.aggregates.totalBalanceDue,
+        paymentBreakdown: result.aggregates.paymentBreakdown,
+        shifts,
+        reduced: result.applied,
+        targetTotal: result.targetTotal,
+      });
+    }
 
     const [[totals]] = await pool.query(
       `SELECT COUNT(*) AS transactionCount,
@@ -501,6 +744,7 @@ async function getDailyReport(req, res) {
       totalBalanceDue: Number(totalBalanceDue),
       paymentBreakdown: paymentBreakdown.map((row) => ({ method: row.method, total: Number(row.total) })),
       shifts,
+      reduced: false,
     });
   } catch (err) {
     console.error(err);
@@ -516,6 +760,49 @@ async function getStaffSalesReport(req, res) {
   try {
     const to = req.query.to || new Date().toISOString().slice(0, 10);
     const from = req.query.from || to;
+    const reduce = wantsReduced(req);
+
+    if (reduce) {
+      const { min, max } = await loadReduceSaleSettings();
+      // Staff breakdown is usually a single day (Z-Report). Reduce per day so
+      // each day's target stays stable, then merge rows.
+      const days = [];
+      const cursor = new Date(`${from}T00:00:00`);
+      const end = new Date(`${to}T00:00:00`);
+      while (cursor <= end) {
+        days.push(cursor.toISOString().slice(0, 10));
+        cursor.setDate(cursor.getDate() + 1);
+      }
+
+      const merged = new Map();
+      for (const day of days) {
+        const loaded = await loadCompletedSalesForDate(day, null);
+        const result = reduceSaleReport({
+          scopeKey: `z:${day}:all`,
+          min,
+          max,
+          sales: loaded,
+        });
+        for (const row of result.staffSales) {
+          const key = `${row.date}|${row.staff_id}`;
+          if (!merged.has(key)) {
+            merged.set(key, { ...row });
+          } else {
+            const m = merged.get(key);
+            m.transactionCount += row.transactionCount;
+            m.totalSales = Number((m.totalSales + row.totalSales).toFixed(2));
+            m.totalDiscount = Number((m.totalDiscount + row.totalDiscount).toFixed(2));
+          }
+        }
+      }
+
+      return res.json(
+        [...merged.values()].sort((a, b) => {
+          if (a.date === b.date) return b.totalSales - a.totalSales;
+          return a.date < b.date ? 1 : -1;
+        })
+      );
+    }
 
     const [rows] = await pool.query(
       `SELECT DATE(s.created_at) AS date, u.id AS staff_id, u.name AS staff_name,
@@ -549,6 +836,9 @@ async function getStaffSalesReport(req, res) {
 async function getXReport(req, res) {
   try {
     const isStaffOnly = req.user.role === 'Staff';
+    const reduce = wantsReduced(req);
+    const reduceSettings = reduce ? await loadReduceSaleSettings() : null;
+
     const [shifts] = await pool.query(
       `SELECT ps.*, u.name AS staff_name FROM pos_shifts ps JOIN users u ON u.id = ps.staff_id
        WHERE ps.status = 'open' ${isStaffOnly ? 'AND ps.staff_id = ?' : ''}
@@ -558,6 +848,28 @@ async function getXReport(req, res) {
 
     const report = [];
     for (const shift of shifts) {
+      if (reduce) {
+        const loaded = await loadCompletedSalesForShift(shift.id);
+        const result = reduceSaleReport({
+          scopeKey: `x:${shift.id}`,
+          min: reduceSettings.min,
+          max: reduceSettings.max,
+          sales: loaded,
+        });
+        report.push({
+          shift,
+          transactionCount: result.aggregates.transactionCount,
+          totalSales: result.aggregates.totalSales,
+          totalDiscount: result.aggregates.totalDiscount,
+          totalBalanceDue: result.aggregates.totalBalanceDue,
+          paymentBreakdown: result.aggregates.paymentBreakdown,
+          expectedCash: Number(shift.opening_cash) + result.aggregates.cashCollected,
+          reduced: result.applied,
+          targetTotal: result.targetTotal,
+        });
+        continue;
+      }
+
       const [[totals]] = await pool.query(
         `SELECT COUNT(*) AS transactionCount,
                 COALESCE(SUM(total_amount), 0) AS totalSales,
@@ -591,6 +903,7 @@ async function getXReport(req, res) {
         totalBalanceDue: Number(totalBalanceDue),
         paymentBreakdown: paymentBreakdown.map((row) => ({ method: row.method, total: Number(row.total) })),
         expectedCash: Number(shift.opening_cash) + Number(cashCollected),
+        reduced: false,
       });
     }
 
