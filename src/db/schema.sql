@@ -183,6 +183,7 @@ CREATE TABLE IF NOT EXISTS settings (
   pos_display_price VARCHAR(10) NOT NULL DEFAULT 'sale',
   pos_reduce_sale_min DECIMAL(12,2) NOT NULL DEFAULT 0,
   pos_reduce_sale_max DECIMAL(12,2) NOT NULL DEFAULT 0,
+  pos_reduce_sale_is_active TINYINT(1) NOT NULL DEFAULT 0,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 

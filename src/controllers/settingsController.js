@@ -12,7 +12,7 @@ const PUBLIC_SETTINGS_COLUMNS = `
   theme_color_light, theme_color_dark, active_font,
   terms_content, return_policy_content, privacy_policy_content, about_content, updated_at,
   pos_is_active, pos_tax_percent, pos_service_charge_percent, pos_receipt_phone, pos_display_price,
-  pos_reduce_sale_min, pos_reduce_sale_max
+  pos_reduce_sale_min, pos_reduce_sale_max, pos_reduce_sale_is_active
 `;
 
 // Drives the admin panel's setup-progress bar. A section counts as complete
@@ -238,7 +238,7 @@ async function updateSettings(req, res) {
       drive_client_id, drive_client_secret, drive_refresh_token, drive_folder_id,
       active_font,
       pos_is_active, pos_tax_percent, pos_service_charge_percent, pos_receipt_phone, pos_display_price,
-      pos_reduce_sale_min, pos_reduce_sale_max,
+      pos_reduce_sale_min, pos_reduce_sale_max, pos_reduce_sale_is_active,
     } = req.body;
 
     // POS on/off + its default rates are a SuperAdmin-only control (this
@@ -253,6 +253,7 @@ async function updateSettings(req, res) {
       pos_display_price,
       pos_reduce_sale_min,
       pos_reduce_sale_max,
+      pos_reduce_sale_is_active,
     ].some((v) => v !== undefined);
     if (posFieldsTouched && req.user.role !== 'SuperAdmin') {
       return res.status(403).json({ message: 'Only Super Admin can change POS settings' });
@@ -316,6 +317,10 @@ async function updateSettings(req, res) {
         fields.push('pos_reduce_sale_max = ?');
         values.push(maxVal);
       }
+    }
+    if (pos_reduce_sale_is_active !== undefined) {
+      fields.push('pos_reduce_sale_is_active = ?');
+      values.push(pos_reduce_sale_is_active ? 1 : 0);
     }
     if (fields.length === 0) return res.status(400).json({ message: 'Nothing to update' });
 

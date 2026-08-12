@@ -614,6 +614,7 @@ async function migrate() {
     await addColumnIfMissing(connection, DB_NAME, 'settings', 'pos_display_price', "VARCHAR(10) NOT NULL DEFAULT 'sale'", 'pos_receipt_phone');
     await addColumnIfMissing(connection, DB_NAME, 'settings', 'pos_reduce_sale_min', 'DECIMAL(12,2) NOT NULL DEFAULT 0', 'pos_display_price');
     await addColumnIfMissing(connection, DB_NAME, 'settings', 'pos_reduce_sale_max', 'DECIMAL(12,2) NOT NULL DEFAULT 0', 'pos_reduce_sale_min');
+    await addColumnIfMissing(connection, DB_NAME, 'settings', 'pos_reduce_sale_is_active', 'TINYINT(1) NOT NULL DEFAULT 0', 'pos_reduce_sale_max');
 
     // Brevo/SMTP -> EmailJS migration.
     await dropColumnIfExists(connection, DB_NAME, 'settings', 'smtp_host');
