@@ -10,6 +10,7 @@ const OTP_SUBJECTS = {
   register_seller: 'Verify your email to finish your seller application',
   forgot_password: 'Your password reset code',
   change_email: 'Verify your new email address',
+  create_staff: 'Verify your email for your new staff account',
 };
 
 const OTP_INTROS = {
@@ -17,6 +18,7 @@ const OTP_INTROS = {
   register_seller: 'Use the code below to verify your email and complete your seller application.',
   forgot_password: 'Use the code below to reset your password.',
   change_email: 'Use the code below to verify your new email address.',
+  create_staff: 'An admin is setting up a staff account for you. Share the code below with them to confirm this is your email.',
 };
 
 async function getConfig() {
@@ -134,6 +136,16 @@ async function sendSellerRejectedEmail(to, name, shopName) {
   );
 }
 
+async function sendStaffCreatedEmail(to, name) {
+  await sendNotification(
+    'Your staff account is ready',
+    'Your staff/cashier account has been created. You can now log in and start using the POS.',
+    to,
+    name,
+    'staff-created'
+  );
+}
+
 async function sendSetupCompleteEmail(to) {
   await sendNotification(
     'Your store setup is complete!',
@@ -150,5 +162,6 @@ module.exports = {
   sendSellerAppliedEmail,
   sendSellerApprovedEmail,
   sendSellerRejectedEmail,
+  sendStaffCreatedEmail,
   sendSetupCompleteEmail,
 };

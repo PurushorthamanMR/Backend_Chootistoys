@@ -5,7 +5,7 @@ const { buildSellerApplicationMessage } = require('./whatsappController');
 const { isValidEmail } = require('../utils/validators');
 const { getWhatsappNumber } = require('../utils/settings');
 const { signToken } = require('./authController');
-const { sendOtpEmail, sendWelcomeEmail, sendSellerAppliedEmail } = require('../services/emailService');
+const { sendOtpEmail, sendWelcomeEmail, sendSellerAppliedEmail, sendStaffCreatedEmail } = require('../services/emailService');
 
 const OTP_TTL_MINUTES = 10;
 const RESEND_COOLDOWN_SECONDS = 60;
@@ -250,6 +250,76 @@ async function verifySellerOtp(req, res) {
   }
 }
 
+// ---- Staff creation (Admin > Users > Add Staff) ----
+// Admin-initiated, unlike the self-service flows above - the OTP still goes
+// to the new staff member's own email (proving the admin didn't mistype it
+// and that the cashier actually has access to that inbox) but it's the
+// Admin who requests/enters the code, since they're driving the form.
+
+async function sendStaffOtp(req, res) {
+  try {
+    const { name, email, password, phone } = req.body;
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: 'Name, email, and password are required' });
+    }
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ message: 'Enter a valid email address' });
+    }
+
+    const [existingEmail] = await pool.query('SELECT id FROM users WHERE email = ?', [email]);
+    if (existingEmail.length > 0) {
+      return res.status(409).json({ message: 'That email is already in use' });
+    }
+    if (phone) {
+      const [existingPhone] = await pool.query('SELECT id FROM users WHERE phone = ?', [phone]);
+      if (existingPhone.length > 0) {
+        return res.status(409).json({ message: 'That phone number is already in use' });
+      }
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await createOtp(email, 'create_staff', { name, email, phone: phone || null, password: hashedPassword });
+    res.json({ message: 'Verification code sent to the staff email', identifier: email });
+  } catch (err) {
+    handleOtpError(err, res, 'Failed to send verification code');
+  }
+}
+
+async function verifyStaffOtp(req, res) {
+  try {
+    const { email, code } = req.body;
+    if (!email || !code) return res.status(400).json({ message: 'Email and code are required' });
+
+    const { payload } = await verifyOtp(email, 'create_staff', code);
+    if (!payload) return res.status(400).json({ message: 'Verification session expired. Please fill the form again.' });
+
+    const [existingEmail] = await pool.query('SELECT id FROM users WHERE email = ?', [payload.email]);
+    if (existingEmail.length > 0) {
+      return res.status(409).json({ message: 'That email is already in use' });
+    }
+    if (payload.phone) {
+      const [existingPhone] = await pool.query('SELECT id FROM users WHERE phone = ?', [payload.phone]);
+      if (existingPhone.length > 0) {
+        return res.status(409).json({ message: 'That phone number is already in use' });
+      }
+    }
+
+    const [[role]] = await pool.query(`SELECT id FROM user_roles WHERE name = 'Staff'`);
+    if (!role) return res.status(500).json({ message: 'Staff role is not configured' });
+
+    const [result] = await pool.query(
+      `INSERT INTO users (name, email, password, phone, role_id, status, is_active) VALUES (?, ?, ?, ?, ?, 'approved', 1)`,
+      [payload.name, payload.email, payload.password, payload.phone, role.id]
+    );
+
+    await sendStaffCreatedEmail(payload.email, payload.name);
+
+    res.status(201).json({ id: result.insertId, message: 'Staff account created' });
+  } catch (err) {
+    handleOtpError(err, res, 'Verification failed');
+  }
+}
+
 // ---- Forgot password ----
 
 async function sendForgotPasswordOtp(req, res) {
@@ -376,6 +446,8 @@ module.exports = {
   verifyRegisterOtp,
   sendSellerOtp,
   verifySellerOtp,
+  sendStaffOtp,
+  verifyStaffOtp,
   sendForgotPasswordOtp,
   verifyForgotPasswordOtp,
   resetPassword,
