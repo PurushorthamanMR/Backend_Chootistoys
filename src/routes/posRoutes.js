@@ -3,6 +3,8 @@ const {
   openShift,
   getCurrentShift,
   closeShift,
+  cashOutShift,
+  listCashOuts,
   createSale,
   voidSale,
   addSalePayment,
@@ -25,6 +27,8 @@ router.use(authenticate, requirePos);
 router.post('/shifts', openShift);
 router.get('/shifts/current', getCurrentShift);
 router.post('/shifts/:id/close', closeShift);
+router.post('/shifts/:id/cash-out', cashOutShift);
+router.get('/shifts/:id/cash-outs', listCashOuts);
 
 router.post('/sales', createSale);
 router.get('/sales', listSales);

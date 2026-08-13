@@ -50,4 +50,21 @@ function requirePos(req, res, next) {
   next();
 }
 
-module.exports = { authenticate, authenticateOptional, requireAdmin, requireSuperAdmin, requirePos };
+// Scoped for the env-only PosSettings login (Backend/.env POS_USERNAME/POS_PASSWORD)
+// - only used on PUT /api/settings, never on requireAdmin itself, so this role
+// can't reach products/orders/users APIs.
+function requireAdminOrPosSettings(req, res, next) {
+  if (!req.user || !['Admin', 'SuperAdmin', 'PosSettings'].includes(req.user.role)) {
+    return res.status(403).json({ message: 'Admin access required' });
+  }
+  next();
+}
+
+module.exports = {
+  authenticate,
+  authenticateOptional,
+  requireAdmin,
+  requireSuperAdmin,
+  requirePos,
+  requireAdminOrPosSettings,
+};

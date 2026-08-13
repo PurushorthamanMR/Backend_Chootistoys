@@ -2,6 +2,7 @@ const pool = require('../config/db');
 const { reduceSaleReport } = require('../utils/reduceSaleReport');
 
 const PAYMENT_METHODS = ['cash', 'card', 'cheque'];
+const CASH_OUT_REASONS = ['Salary', 'Delivery', 'Collection', 'Lunch', 'Other'];
 
 async function loadReduceSaleSettings() {
   const [[row]] = await pool.query(
@@ -160,6 +161,26 @@ async function getCurrentShift(req, res) {
   }
 }
 
+async function getCashOutTotal(shiftId) {
+  const [[{ cashOutTotal }]] = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0) AS cashOutTotal FROM cash_movements WHERE shift_id = ?`,
+    [shiftId]
+  );
+  return Number(cashOutTotal);
+}
+
+/**
+ * Shared till math for Close Shift / X-Report: opening float + cash collected
+ * during the shift, minus cash taken out (salary, delivery, etc). cashCollected
+ * is passed in rather than queried here because callers may pass either the
+ * real DB aggregate or the Reduce-Sale-adjusted aggregate - cash-outs are real
+ * till events either way and always subtract from whichever figure is shown.
+ */
+async function computeExpectedCash(shiftId, openingCash, cashCollected) {
+  const cashOutTotal = await getCashOutTotal(shiftId);
+  return { expectedCash: Number(openingCash) + Number(cashCollected) - cashOutTotal, cashOutTotal };
+}
+
 async function closeShift(req, res) {
   try {
     const { id } = req.params;
@@ -181,17 +202,84 @@ async function closeShift(req, res) {
        WHERE sp.shift_id = ? AND sp.method = 'cash' AND s.status != 'voided'`,
       [id]
     );
-    const expectedCash = Number(shift.opening_cash) + Number(cashCollected);
+    const { expectedCash, cashOutTotal } = await computeExpectedCash(id, shift.opening_cash, cashCollected);
 
     await pool.query(
       `UPDATE pos_shifts SET closing_cash = ?, expected_cash = ?, closed_at = NOW(), status = 'closed' WHERE id = ?`,
       [closing_cash, expectedCash, id]
     );
     const [[updated]] = await pool.query('SELECT * FROM pos_shifts WHERE id = ?', [id]);
-    res.json(updated);
+    res.json({ ...updated, cash_out_total: cashOutTotal });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Failed to close shift' });
+  }
+}
+
+async function cashOutShift(req, res) {
+  try {
+    const { id } = req.params;
+    const { amount, reason, note } = req.body;
+    const amt = Number(amount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      return res.status(400).json({ message: 'Enter a valid cash-out amount' });
+    }
+    if (!CASH_OUT_REASONS.includes(reason)) {
+      return res.status(400).json({ message: 'Invalid reason' });
+    }
+    if (reason === 'Other' && !String(note || '').trim()) {
+      return res.status(400).json({ message: 'Enter a note for "Other"' });
+    }
+
+    const [[shift]] = await pool.query('SELECT * FROM pos_shifts WHERE id = ?', [id]);
+    if (!shift) return res.status(404).json({ message: 'Shift not found' });
+    if (shift.status !== 'open') return res.status(400).json({ message: 'Shift is already closed' });
+    if (req.user.role === 'Staff' && shift.staff_id !== req.user.id) {
+      return res.status(403).json({ message: 'You can only take cash out of your own shift' });
+    }
+
+    const [[{ cashCollected }]] = await pool.query(
+      `SELECT COALESCE(SUM(sp.amount), 0) AS cashCollected FROM sale_payments sp
+       JOIN sales s ON s.id = sp.sale_id
+       WHERE sp.shift_id = ? AND sp.method = 'cash' AND s.status != 'voided'`,
+      [id]
+    );
+    const cashOutTotal = await getCashOutTotal(id);
+    const availableCash = Number(shift.opening_cash) + Number(cashCollected) - cashOutTotal;
+    if (amt > availableCash) {
+      return res.status(400).json({ message: 'Insufficient cash in till' });
+    }
+
+    const [result] = await pool.query(
+      `INSERT INTO cash_movements (shift_id, staff_id, amount, reason, note) VALUES (?, ?, ?, ?, ?)`,
+      [id, req.user.id, amt, reason, note || null]
+    );
+    const [[movement]] = await pool.query('SELECT * FROM cash_movements WHERE id = ?', [result.insertId]);
+    res.status(201).json(movement);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to record cash out' });
+  }
+}
+
+async function listCashOuts(req, res) {
+  try {
+    const { id } = req.params;
+    const [[shift]] = await pool.query('SELECT staff_id FROM pos_shifts WHERE id = ?', [id]);
+    if (!shift) return res.status(404).json({ message: 'Shift not found' });
+    if (req.user.role === 'Staff' && shift.staff_id !== req.user.id) {
+      return res.status(403).json({ message: 'You can only view your own shift' });
+    }
+    const [rows] = await pool.query(
+      `SELECT cm.*, u.name AS staff_name FROM cash_movements cm
+       JOIN users u ON u.id = cm.staff_id
+       WHERE cm.shift_id = ? ORDER BY cm.created_at DESC`,
+      [id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to fetch cash-outs' });
   }
 }
 
@@ -644,52 +732,119 @@ async function getSaleItems(req, res) {
   }
 }
 
+// Batches the cash-out lookup for a list of shifts (Z-Report) instead of
+// querying per-shift, and returns the day's total alongside the shifts.
+async function attachCashOutTotals(shifts) {
+  if (shifts.length === 0) return { shifts: [], totalCashOut: 0 };
+  const ids = shifts.map((s) => s.id);
+  const [rows] = await pool.query(
+    `SELECT shift_id, COALESCE(SUM(amount), 0) AS total FROM cash_movements WHERE shift_id IN (?) GROUP BY shift_id`,
+    [ids]
+  );
+  const byShift = new Map(rows.map((r) => [r.shift_id, Number(r.total)]));
+  const withTotals = shifts.map((s) => ({ ...s, cash_out_total: byShift.get(s.id) || 0 }));
+  const totalCashOut = withTotals.reduce((sum, s) => sum + s.cash_out_total, 0);
+  return { shifts: withTotals, totalCashOut };
+}
+
+// Accepts either a single `date`, or a `from`/`to` range (Z-Report date
+// filter) - all three are optional and default to today, so existing
+// single-day callers keep working unchanged. When a range spans more than
+// one day, `days` in the response holds a per-date breakdown of the same
+// figures shown in the overall totals, so the report can be read "date wise
+// separate" instead of only as one lumped total.
 async function getDailyReport(req, res) {
   try {
-    const date = req.query.date || new Date().toISOString().slice(0, 10);
+    const to = req.query.to || req.query.date || new Date().toISOString().slice(0, 10);
+    const from = req.query.from || req.query.date || to;
     const isStaffOnly = req.user.role === 'Staff';
-    const salesParams = isStaffOnly ? [date, req.user.id] : [date];
+    const salesParams = isStaffOnly ? [from, to, req.user.id] : [from, to];
     const staffFilter = isStaffOnly ? 'AND s.staff_id = ?' : '';
     const reduce = wantsReduced(req);
 
     if (reduce) {
       const { min, max } = await loadReduceSaleSettings();
-      const loaded = await loadCompletedSalesForDate(date, isStaffOnly ? req.user.id : null);
-      const result = reduceSaleReport({
-        scopeKey: `z:${date}:${isStaffOnly ? req.user.id : 'all'}`,
-        min,
-        max,
-        sales: loaded,
-      });
+      const days = [];
+      const cursor = new Date(`${from}T00:00:00`);
+      const end = new Date(`${to}T00:00:00`);
+      while (cursor <= end) {
+        days.push(cursor.toISOString().slice(0, 10));
+        cursor.setDate(cursor.getDate() + 1);
+      }
 
-      const [[voided]] = await pool.query(
-        `SELECT COUNT(*) AS voidedCount FROM sales s WHERE DATE(s.created_at) = ? AND s.status = 'voided' ${staffFilter}`,
-        salesParams
-      );
-      const [[returned]] = await pool.query(
-        `SELECT COUNT(*) AS returnedCount FROM sales s WHERE DATE(s.created_at) = ? AND s.status = 'returned' ${staffFilter}`,
-        salesParams
-      );
-      const shiftParams = isStaffOnly ? [date, req.user.id] : [date];
-      const [shifts] = await pool.query(
+      const dayRows = [];
+      const grand = { transactionCount: 0, totalSales: 0, totalDiscount: 0, totalBalanceDue: 0 };
+      const paymentTotals = new Map();
+
+      for (const day of days) {
+        const loaded = await loadCompletedSalesForDate(day, isStaffOnly ? req.user.id : null);
+        const result = reduceSaleReport({
+          scopeKey: `z:${day}:${isStaffOnly ? req.user.id : 'all'}`,
+          min,
+          max,
+          sales: loaded,
+        });
+        const dayParams = isStaffOnly ? [day, req.user.id] : [day];
+        const [[voided]] = await pool.query(
+          `SELECT COUNT(*) AS voidedCount FROM sales s WHERE DATE(s.created_at) = ? AND s.status = 'voided' ${staffFilter}`,
+          dayParams
+        );
+        const [[returned]] = await pool.query(
+          `SELECT COUNT(*) AS returnedCount FROM sales s WHERE DATE(s.created_at) = ? AND s.status = 'returned' ${staffFilter}`,
+          dayParams
+        );
+        const [[{ dayCashOut }]] = await pool.query(
+          `SELECT COALESCE(SUM(amount), 0) AS dayCashOut FROM cash_movements WHERE DATE(created_at) = ? ${isStaffOnly ? 'AND staff_id = ?' : ''}`,
+          dayParams
+        );
+
+        dayRows.push({
+          date: day,
+          transactionCount: result.aggregates.transactionCount,
+          totalSales: result.aggregates.totalSales,
+          totalDiscount: result.aggregates.totalDiscount,
+          totalBalanceDue: result.aggregates.totalBalanceDue,
+          voidedCount: voided.voidedCount,
+          returnedCount: returned.returnedCount,
+          totalCashOut: Number(dayCashOut),
+        });
+
+        grand.transactionCount += result.aggregates.transactionCount;
+        grand.totalSales = Number((grand.totalSales + result.aggregates.totalSales).toFixed(2));
+        grand.totalDiscount = Number((grand.totalDiscount + result.aggregates.totalDiscount).toFixed(2));
+        grand.totalBalanceDue = Number((grand.totalBalanceDue + result.aggregates.totalBalanceDue).toFixed(2));
+        for (const row of result.aggregates.paymentBreakdown) {
+          paymentTotals.set(row.method, (paymentTotals.get(row.method) || 0) + row.total);
+        }
+      }
+
+      const shiftParams = isStaffOnly ? [from, to, req.user.id] : [from, to];
+      const [rawShifts] = await pool.query(
         `SELECT ps.*, u.name AS staff_name FROM pos_shifts ps JOIN users u ON u.id = ps.staff_id
-         WHERE DATE(ps.opened_at) = ? ${isStaffOnly ? 'AND ps.staff_id = ?' : ''}
+         WHERE DATE(ps.opened_at) BETWEEN ? AND ? ${isStaffOnly ? 'AND ps.staff_id = ?' : ''}
          ORDER BY ps.opened_at DESC`,
         shiftParams
       );
+      const { shifts, totalCashOut } = await attachCashOutTotals(rawShifts);
 
       return res.json({
-        date,
-        transactionCount: result.aggregates.transactionCount,
-        totalSales: result.aggregates.totalSales,
-        totalDiscount: result.aggregates.totalDiscount,
-        voidedCount: voided.voidedCount,
-        returnedCount: returned.returnedCount,
-        totalBalanceDue: result.aggregates.totalBalanceDue,
-        paymentBreakdown: result.aggregates.paymentBreakdown,
+        date: to,
+        from,
+        to,
+        transactionCount: grand.transactionCount,
+        totalSales: grand.totalSales,
+        totalDiscount: grand.totalDiscount,
+        voidedCount: dayRows.reduce((sum, d) => sum + d.voidedCount, 0),
+        returnedCount: dayRows.reduce((sum, d) => sum + d.returnedCount, 0),
+        totalBalanceDue: grand.totalBalanceDue,
+        paymentBreakdown: [...paymentTotals.entries()].map(([method, total]) => ({
+          method,
+          total: Number(total.toFixed(2)),
+        })),
         shifts,
-        reduced: result.applied,
-        targetTotal: result.targetTotal,
+        totalCashOut,
+        days: dayRows,
+        reduced: true,
       });
     }
 
@@ -698,44 +853,82 @@ async function getDailyReport(req, res) {
               COALESCE(SUM(total_amount), 0) AS totalSales,
               COALESCE(SUM(discount_amount), 0) AS totalDiscount
        FROM sales s
-       WHERE DATE(s.created_at) = ? AND s.status = 'completed' ${staffFilter}`,
+       WHERE DATE(s.created_at) BETWEEN ? AND ? AND s.status = 'completed' ${staffFilter}`,
       salesParams
     );
 
     const [[voided]] = await pool.query(
-      `SELECT COUNT(*) AS voidedCount FROM sales s WHERE DATE(s.created_at) = ? AND s.status = 'voided' ${staffFilter}`,
+      `SELECT COUNT(*) AS voidedCount FROM sales s WHERE DATE(s.created_at) BETWEEN ? AND ? AND s.status = 'voided' ${staffFilter}`,
       salesParams
     );
 
     const [[returned]] = await pool.query(
-      `SELECT COUNT(*) AS returnedCount FROM sales s WHERE DATE(s.created_at) = ? AND s.status = 'returned' ${staffFilter}`,
+      `SELECT COUNT(*) AS returnedCount FROM sales s WHERE DATE(s.created_at) BETWEEN ? AND ? AND s.status = 'returned' ${staffFilter}`,
       salesParams
     );
 
     const [[{ totalBalanceDue }]] = await pool.query(
       `SELECT COALESCE(SUM(balance_due), 0) AS totalBalanceDue FROM sales s
-       WHERE DATE(s.created_at) = ? AND s.status = 'completed' ${staffFilter}`,
+       WHERE DATE(s.created_at) BETWEEN ? AND ? AND s.status = 'completed' ${staffFilter}`,
       salesParams
     );
 
     const [paymentBreakdown] = await pool.query(
       `SELECT sp.method, COALESCE(SUM(sp.amount), 0) AS total
        FROM sale_payments sp JOIN sales s ON s.id = sp.sale_id
-       WHERE DATE(sp.created_at) = ? AND s.status != 'voided' ${staffFilter}
+       WHERE DATE(sp.created_at) BETWEEN ? AND ? AND s.status != 'voided' ${staffFilter}
        GROUP BY sp.method`,
       salesParams
     );
 
-    const shiftParams = isStaffOnly ? [date, req.user.id] : [date];
-    const [shifts] = await pool.query(
+    const [dayRows] = await pool.query(
+      `SELECT DATE(s.created_at) AS date,
+              COUNT(CASE WHEN s.status = 'completed' THEN 1 END) AS transactionCount,
+              COALESCE(SUM(CASE WHEN s.status = 'completed' THEN s.total_amount END), 0) AS totalSales,
+              COALESCE(SUM(CASE WHEN s.status = 'completed' THEN s.discount_amount END), 0) AS totalDiscount,
+              COALESCE(SUM(CASE WHEN s.status = 'completed' THEN s.balance_due END), 0) AS totalBalanceDue,
+              COUNT(CASE WHEN s.status = 'voided' THEN 1 END) AS voidedCount,
+              COUNT(CASE WHEN s.status = 'returned' THEN 1 END) AS returnedCount
+       FROM sales s
+       WHERE DATE(s.created_at) BETWEEN ? AND ? ${staffFilter}
+       GROUP BY DATE(s.created_at)
+       ORDER BY date DESC`,
+      salesParams
+    );
+
+    const cashOutDayParams = isStaffOnly ? [from, to, req.user.id] : [from, to];
+    const [cashOutByDay] = await pool.query(
+      `SELECT DATE(created_at) AS date, COALESCE(SUM(amount), 0) AS total FROM cash_movements
+       WHERE DATE(created_at) BETWEEN ? AND ? ${isStaffOnly ? 'AND staff_id = ?' : ''}
+       GROUP BY DATE(created_at)`,
+      cashOutDayParams
+    );
+    const cashOutMap = new Map(cashOutByDay.map((r) => [saleDateKey(r.date), Number(r.total)]));
+
+    const days = dayRows.map((r) => ({
+      date: saleDateKey(r.date),
+      transactionCount: r.transactionCount,
+      totalSales: Number(r.totalSales),
+      totalDiscount: Number(r.totalDiscount),
+      totalBalanceDue: Number(r.totalBalanceDue),
+      voidedCount: r.voidedCount,
+      returnedCount: r.returnedCount,
+      totalCashOut: cashOutMap.get(saleDateKey(r.date)) || 0,
+    }));
+
+    const shiftParams = isStaffOnly ? [from, to, req.user.id] : [from, to];
+    const [rawShifts] = await pool.query(
       `SELECT ps.*, u.name AS staff_name FROM pos_shifts ps JOIN users u ON u.id = ps.staff_id
-       WHERE DATE(ps.opened_at) = ? ${isStaffOnly ? 'AND ps.staff_id = ?' : ''}
+       WHERE DATE(ps.opened_at) BETWEEN ? AND ? ${isStaffOnly ? 'AND ps.staff_id = ?' : ''}
        ORDER BY ps.opened_at DESC`,
       shiftParams
     );
+    const { shifts, totalCashOut } = await attachCashOutTotals(rawShifts);
 
     res.json({
-      date,
+      date: to,
+      from,
+      to,
       transactionCount: totals.transactionCount,
       totalSales: Number(totals.totalSales),
       totalDiscount: Number(totals.totalDiscount),
@@ -744,6 +937,8 @@ async function getDailyReport(req, res) {
       totalBalanceDue: Number(totalBalanceDue),
       paymentBreakdown: paymentBreakdown.map((row) => ({ method: row.method, total: Number(row.total) })),
       shifts,
+      totalCashOut,
+      days,
       reduced: false,
     });
   } catch (err) {
@@ -820,6 +1015,7 @@ async function getStaffSalesReport(req, res) {
     res.json(
       rows.map((r) => ({
         ...r,
+        date: saleDateKey(r.date),
         totalSales: Number(r.totalSales),
         totalDiscount: Number(r.totalDiscount),
       }))
@@ -856,6 +1052,11 @@ async function getXReport(req, res) {
           max: reduceSettings.max,
           sales: loaded,
         });
+        const { expectedCash, cashOutTotal } = await computeExpectedCash(
+          shift.id,
+          shift.opening_cash,
+          result.aggregates.cashCollected
+        );
         report.push({
           shift,
           transactionCount: result.aggregates.transactionCount,
@@ -863,7 +1064,8 @@ async function getXReport(req, res) {
           totalDiscount: result.aggregates.totalDiscount,
           totalBalanceDue: result.aggregates.totalBalanceDue,
           paymentBreakdown: result.aggregates.paymentBreakdown,
-          expectedCash: Number(shift.opening_cash) + result.aggregates.cashCollected,
+          expectedCash,
+          cashOutTotal,
           reduced: result.applied,
           targetTotal: result.targetTotal,
         });
@@ -894,6 +1096,7 @@ async function getXReport(req, res) {
          WHERE sp.shift_id = ? AND sp.method = 'cash' AND s.status != 'voided'`,
         [shift.id]
       );
+      const { expectedCash, cashOutTotal } = await computeExpectedCash(shift.id, shift.opening_cash, cashCollected);
 
       report.push({
         shift,
@@ -902,7 +1105,8 @@ async function getXReport(req, res) {
         totalDiscount: Number(totals.totalDiscount),
         totalBalanceDue: Number(totalBalanceDue),
         paymentBreakdown: paymentBreakdown.map((row) => ({ method: row.method, total: Number(row.total) })),
-        expectedCash: Number(shift.opening_cash) + Number(cashCollected),
+        expectedCash,
+        cashOutTotal,
         reduced: false,
       });
     }
@@ -965,6 +1169,8 @@ module.exports = {
   openShift,
   getCurrentShift,
   closeShift,
+  cashOutShift,
+  listCashOuts,
   createSale,
   voidSale,
   addSalePayment,

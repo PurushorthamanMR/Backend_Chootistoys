@@ -9,6 +9,15 @@ function getSuperAdminCredentials() {
   };
 }
 
+/** Env-only login scoped to the Point of Sale admin settings tab - no DB
+ *  row, since nothing in the app needs to FK to this identity. */
+function getPosSettingsCredentials() {
+  return {
+    username: process.env.POS_USERNAME,
+    password: process.env.POS_PASSWORD,
+  };
+}
+
 /** Ensure SuperAdmin exists in users so orders.user_id FK succeeds. */
 async function ensureSuperAdminUser() {
   const { username, password } = getSuperAdminCredentials();
@@ -90,6 +99,18 @@ async function login(req, res) {
       }
     }
 
+    const { username: posUsername, password: posPassword } = getPosSettingsCredentials();
+    if (posUsername && posPassword && loginId === posUsername && password === posPassword) {
+      const user = {
+        id: -1,
+        name: 'Point of Sale Settings',
+        email: posUsername,
+        role: 'PosSettings',
+        type: 'staff',
+      };
+      return res.json({ token: signToken(user), user });
+    }
+
     const [staffRows] = await pool.query(
       `SELECT u.*, r.name AS role FROM users u JOIN user_roles r ON r.id = u.role_id WHERE u.email = ? OR u.phone = ?`,
       [loginId, loginId]
@@ -166,6 +187,10 @@ async function me(req, res) {
     if (req.user.type === 'staff' && req.user.role === 'SuperAdmin' && req.user.id === 0) {
       const user = await ensureSuperAdminUser();
       return res.json(user);
+    }
+    if (req.user.type === 'staff' && req.user.role === 'PosSettings') {
+      const { username } = getPosSettingsCredentials();
+      return res.json({ id: -1, name: 'Point of Sale Settings', email: username, role: 'PosSettings', type: 'staff' });
     }
     if (req.user.type === 'customer') {
       const [rows] = await pool.query(

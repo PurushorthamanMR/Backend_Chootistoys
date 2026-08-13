@@ -229,6 +229,14 @@ async function regenerateWholesaleToken(req, res) {
 
 async function updateSettings(req, res) {
   try {
+    // The env-only PosSettings login (Backend/.env POS_USERNAME/POS_PASSWORD)
+    // is scoped to the Point of Sale settings tab only - strip anything else
+    // from the body as defense in depth even if the frontend guard is bypassed.
+    const body =
+      req.user.role === 'PosSettings'
+        ? Object.fromEntries(Object.entries(req.body).filter(([key]) => key.startsWith('pos_')))
+        : req.body;
+
     const {
       store_name, store_short_name, store_logo, store_icon, whatsapp_number, address, email,
       theme_color_light, theme_color_dark,
@@ -239,12 +247,13 @@ async function updateSettings(req, res) {
       active_font,
       pos_is_active, pos_tax_percent, pos_service_charge_percent, pos_receipt_phone, pos_display_price,
       pos_reduce_sale_min, pos_reduce_sale_max, pos_reduce_sale_is_active,
-    } = req.body;
+    } = body;
 
-    // POS on/off + its default rates are a SuperAdmin-only control (this
-    // route is otherwise Admin-or-SuperAdmin) - reject outright rather than
-    // silently ignore, so a non-SuperAdmin gets a clear error instead of a
-    // confusing "saved but nothing changed".
+    // POS on/off + its default rates are a SuperAdmin (or the scoped
+    // PosSettings login) only control (this route is otherwise
+    // Admin-or-SuperAdmin) - reject outright rather than silently ignore, so
+    // anyone else gets a clear error instead of a confusing "saved but
+    // nothing changed".
     const posFieldsTouched = [
       pos_is_active,
       pos_tax_percent,
@@ -255,7 +264,7 @@ async function updateSettings(req, res) {
       pos_reduce_sale_max,
       pos_reduce_sale_is_active,
     ].some((v) => v !== undefined);
-    if (posFieldsTouched && req.user.role !== 'SuperAdmin') {
+    if (posFieldsTouched && !['SuperAdmin', 'PosSettings'].includes(req.user.role)) {
       return res.status(403).json({ message: 'Only Super Admin can change POS settings' });
     }
 

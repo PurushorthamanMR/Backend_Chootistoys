@@ -13,7 +13,7 @@ const {
 } = require('../controllers/settingsController');
 const { exportStructure, exportData } = require('../controllers/exportController');
 const { importSettingsData } = require('../controllers/importController');
-const { authenticateOptional, authenticate, requireAdmin, requireSuperAdmin } = require('../middleware/auth');
+const { authenticateOptional, authenticate, requireAdmin, requireSuperAdmin, requireAdminOrPosSettings } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -31,7 +31,7 @@ const sqlUpload = multer({
 });
 
 router.get('/', authenticateOptional, getSettings);
-router.put('/', authenticate, requireAdmin, updateSettings);
+router.put('/', authenticate, requireAdminOrPosSettings, updateSettings);
 router.get('/email', authenticate, requireAdmin, getEmailSettings);
 router.get('/drive', authenticate, requireAdmin, getDriveSettings);
 router.get('/drive/oauth/start', authenticate, requireAdmin, startDriveOAuth);

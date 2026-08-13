@@ -263,6 +263,18 @@ CREATE TABLE IF NOT EXISTS sale_payments (
   FOREIGN KEY (staff_id) REFERENCES users(id)
 );
 
+CREATE TABLE IF NOT EXISTS cash_movements (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  shift_id INT NOT NULL,
+  staff_id INT NOT NULL,
+  amount DECIMAL(10,2) NOT NULL,
+  reason VARCHAR(50) NOT NULL,
+  note VARCHAR(255) NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (shift_id) REFERENCES pos_shifts(id),
+  FOREIGN KEY (staff_id) REFERENCES users(id)
+);
+
 CREATE TABLE IF NOT EXISTS pos_holds (
   id INT AUTO_INCREMENT PRIMARY KEY,
   staff_id INT NOT NULL,
